@@ -7,14 +7,16 @@ let transcriptRows = [];
 let selectedTranscriptIndexes = new Set();
 let restoredSession = null;
 let codexModels = [];
+let paraformerKeyMasked = "";
 
 function toast(message, error=false){const el=$("toast");el.textContent=message;el.className=error?"show error":"show";setTimeout(()=>el.className="",3600)}
 async function api(path, options={}){const response=await fetch(path,options);let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.detail||`请求失败 ${response.status}`);return data}
 function setPill(el, text, ok){el.textContent=text;el.className=`pill ${ok?"ok":"bad"}`}
+function updateParaformerStatus(configured,masked=""){paraformerKeyMasked=masked||"";setPill($("paraformerStatus"),configured?`Paraformer 已配置${masked?` · ${masked}`:""}`:"缺少 Paraformer Key",configured);$("paraformerKeyButton").textContent=configured?"修改 Key":"配置 Paraformer"}
 function applyAnswerSnapshot(snapshot){if(!snapshot?.text)return;if(snapshot.text.length<answerBuffer.length)return;answerBuffer=snapshot.text;currentQuestion=snapshot.question||currentQuestion;$("questionBox").textContent=currentQuestion;$("answerOutput").textContent=answerBuffer;$("answerState").textContent=snapshot.running?"Codex 正在生成…":"已恢复最近回答"}
 
 async function loadStatus(){
-  try{const s=await api("/api/status");setPill($("paraformerStatus"),s.paraformerConfigured?"Paraformer 已配置":"缺少 Paraformer Key",s.paraformerConfigured);$("includePoints").checked=Boolean(s.answerSettings?.includeCorePoints);applyAnswerSnapshot(s.answerSnapshot);const micSelect=$("microphoneDevice");micSelect.replaceChildren();(s.microphoneDevices||[]).forEach(device=>{const option=document.createElement("option");option.value=device.id;option.textContent=device.name;option.selected=device.id===(s.selectedMicrophoneDeviceId||s.defaultMicrophoneDeviceId);micSelect.append(option)});if(s.session){restoredSession=s.session;sessionId=s.session.id;$("sessionBadge").textContent=`已恢复 · ${s.session.position||s.session.id}`;$("company").value=s.session.company||"";$("position").value=s.session.position||"";$("jd").value=s.session.jd_text||"";$("facts").value=s.session.candidate_facts||"";$("factsWrap").classList.remove("hidden");$("saveFactsButton").classList.remove("hidden")}}
+  try{const s=await api("/api/status");updateParaformerStatus(s.paraformerConfigured,s.paraformerKeyMasked);$("includePoints").checked=Boolean(s.answerSettings?.includeCorePoints);applyAnswerSnapshot(s.answerSnapshot);const micSelect=$("microphoneDevice");micSelect.replaceChildren();(s.microphoneDevices||[]).forEach(device=>{const option=document.createElement("option");option.value=device.id;option.textContent=device.name;option.selected=device.id===(s.selectedMicrophoneDeviceId||s.defaultMicrophoneDeviceId);micSelect.append(option)});if(s.session){restoredSession=s.session;sessionId=s.session.id;$("sessionBadge").textContent=`已恢复 · ${s.session.position||s.session.id}`;$("company").value=s.session.company||"";$("position").value=s.session.position||"";$("jd").value=s.session.jd_text||"";$("facts").value=s.session.candidate_facts||"";$("factsWrap").classList.remove("hidden");$("saveFactsButton").classList.remove("hidden")}}
   catch(e){toast(e.message,true)}
   try{const a=await api("/api/codex/account");const signed=Boolean(a.account);setPill($("codexStatus"),signed?"Codex 已登录":"Codex 未登录",signed);$("loginButton").disabled=signed;$("loginButton").textContent=signed?"已登录":"登录 Codex"}
   catch{setPill($("codexStatus"),"Codex 未连接",false)}
@@ -32,6 +34,9 @@ function updateModelHint(){const model=$("modelSelect").value;$("modelHint").tex
 async function saveModel(){try{await api("/api/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:$("modelSelect").value,effort:$("effortSelect").value})});updateModelHint()}catch(e){toast(e.message,true)}}
 $("modelSelect").onchange=()=>{renderEfforts("low");saveModel()};$("effortSelect").onchange=saveModel;
 $("includePoints").onchange=async()=>{try{await api("/api/settings/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({include_core_points:$("includePoints").checked})});toast($("includePoints").checked?"下一题将生成核心要点和口述版":"下一题将只生成口述回答")}catch(e){toast(e.message,true)}};
+$("paraformerKeyButton").onclick=()=>{$("paraformerKey").value="";$("paraformerKeyConfirm").value="";$("paraformerKeyHint").textContent=paraformerKeyMasked?`当前默认 Key：${paraformerKeyMasked}。请输入两遍新 Key 后确认。`:"请输入两遍 API Key；完整内容保存后不会在页面回显。";$("paraformerKeyDialog").showModal();$("paraformerKey").focus()};
+$("paraformerKeyCancel").onclick=()=>$("paraformerKeyDialog").close();
+$("paraformerKeyForm").onsubmit=async e=>{e.preventDefault();const key=$("paraformerKey").value.trim();const confirmation=$("paraformerKeyConfirm").value.trim();if(key!==confirmation)return toast("两次输入的 API Key 不一致",true);try{const saved=await api("/api/settings/paraformer-key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({api_key:key,confirm_api_key:confirmation})});updateParaformerStatus(saved.configured,saved.masked);$("paraformerKeyDialog").close();toast("Paraformer API Key 已设为本机默认值")}catch(error){toast(error.message,true)}};
 
 $("prepareButton").onclick=async()=>{const form=new FormData();form.append("company",$("company").value);form.append("position",$("position").value);form.append("jd_text",$("jd").value);form.append("knowledge_packs",JSON.stringify([...document.querySelectorAll(".pack input:checked")].map(x=>x.value)));const file=$("resume").files[0];if(file)form.append("resume",file);try{const data=await api("/api/session/prepare",{method:"POST",body:form});sessionId=data.session.id;$("sessionBadge").textContent=`已准备 · ${data.session.position||data.session.id}`;$("facts").value=data.candidateFacts;$("factsWrap").classList.remove("hidden");$("saveFactsButton").classList.remove("hidden");toast("工作区已生成，请核对候选人事实") }catch(e){toast(e.message,true)}};
 $("saveFactsButton").onclick=async()=>{try{await api(`/api/session/${encodeURIComponent(sessionId)}/facts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:$("facts").value})});toast("候选人事实已确认");collapseSetup(true)}catch(e){toast(e.message,true)}};
@@ -68,6 +73,7 @@ function handleEvent(event){
   if(event.type==="answer_completed")$("answerState").textContent=event.status==="completed"?"回答完成":"生成已结束";
   if(event.type==="audio_level"){const prefix=event.speaker==="interviewer"?"interviewer":"candidate";const level=Math.max(0,Math.min(1,Number(event.level)||0));$(prefix+"Level").value=level;$(prefix+"LevelText").textContent=level<.18?"偏小":level>.82?"过大":"正常"}
   if(event.type==="interview_state")setRunning(event.running);
+  if(event.type==="paraformer_key_updated")updateParaformerStatus(true,event.masked);
   if(event.type==="notice")toast(event.message);
   if(event.type==="error"){$("answerState").textContent=event.message||"回答失败 · 可按 F8 重试";toast(event.message,true)}
 }

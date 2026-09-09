@@ -10,7 +10,7 @@
 <body>
   <header>
     <div><span class="eyebrow">LOCAL INTERVIEW WORKSPACE</span><h1>Interview Copilot</h1></div>
-    <div class="status-row"><span id="paraformerStatus" class="pill">Paraformer 检查中</span><span id="codexStatus" class="pill">Codex 检查中</span><button id="loginButton" class="ghost">登录 Codex</button></div>
+    <div class="status-row"><span id="paraformerStatus" class="pill">Paraformer 检查中</span><button id="paraformerKeyButton" class="ghost">配置 Paraformer</button><span id="codexStatus" class="pill">Codex 检查中</span><button id="loginButton" class="ghost">登录 Codex</button></div>
   </header>
 
   <main>
@@ -58,6 +58,15 @@
       <div class="answer-actions"><button id="answerButton" class="primary">回答当前问题</button><button id="interruptButton" class="ghost">打断</button></div>
     </section>
   </main>
+  <dialog id="paraformerKeyDialog">
+    <form id="paraformerKeyForm">
+      <div class="dialog-head"><h2>Paraformer API Key</h2><button id="paraformerKeyCancel" type="button" class="ghost compact">取消</button></div>
+      <p id="paraformerKeyHint" class="hint">完整 Key 不会在页面中回显。</p>
+      <label>输入 API Key<input id="paraformerKey" type="password" autocomplete="new-password" required minlength="8" placeholder="例如：sk-…"></label>
+      <label>再次输入确认<input id="paraformerKeyConfirm" type="password" autocomplete="new-password" required minlength="8" placeholder="再次输入相同的 Key"></label>
+      <button type="submit" class="primary wide">确认并设为本机默认</button>
+    </form>
+  </dialog>
   <div id="toast" role="status"></div>
   <script src="/static/transcript_state.js"></script>
   <script src="/static/app.js"></script>

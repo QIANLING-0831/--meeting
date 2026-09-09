@@ -25,13 +25,15 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-将 Paraformer 密钥保存到当前 Windows 用户的环境变量，不要写入 `config.json`：
+推荐启动页面后点击顶部“配置 Paraformer”，手动输入两遍并确认。Key 会保存在已被 Git 忽略的本机 `config.json` 中，之后自动作为默认值；页面只显示脱敏尾号。该文件仍是本机明文配置，请勿发送给他人。
+
+也可以继续使用当前 Windows 用户的环境变量：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "你的 API Key", "User")
 ```
 
-重新打开终端或 Codex 后生效。Codex 登录无需 OpenAI API Key：页面会读取本机 Codex 登录态；若未登录，点击“登录 Codex”并在新页面中亲自完成一次 ChatGPT 授权。
+环境变量方式需要重新打开终端或 Codex 后生效；页面保存的本机默认值优先。Codex 登录无需 OpenAI API Key：页面会读取本机 Codex 登录态；若未登录，点击“登录 Codex”并在新页面中亲自完成一次 ChatGPT 授权。
 
 ## 知识库
 

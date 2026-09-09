@@ -52,9 +52,23 @@ class AnswerSettingsPayload(BaseModel):
     include_core_points: bool = False
 
 
+class ParaformerKeyPayload(BaseModel):
+    api_key: str
+    confirm_api_key: str
+
+
+def _mask_api_key(api_key: str) -> str:
+    value = api_key.strip()
+    if len(value) < 8:
+        return "****"
+    return f"{value[:3]}****{value[-4:]}"
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     app_root = (root or ROOT).resolve()
     config = AppConfig.load(app_root)
+    if config.paraformer_api_key.strip():
+        os.environ["DASHSCOPE_API_KEY"] = config.paraformer_api_key.strip()
     bus = EventBus()
     engine = InterviewEngine(app_root, config, bus)
     latest_session = engine.sessions.latest()
@@ -92,6 +106,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             session_data["candidate_facts"] = (engine.session.path / "candidate-facts.md").read_text(encoding="utf-8")
         return {
             "paraformerConfigured": bool(os.getenv("DASHSCOPE_API_KEY")),
+            "paraformerKeyMasked": _mask_api_key(os.getenv("DASHSCOPE_API_KEY", "")),
             "running": engine.active,
             "session": session_data,
             "answerSettings": {"includeCorePoints": config.include_core_points},
@@ -258,6 +273,22 @@ def create_app(root: Path | None = None) -> FastAPI:
         config.include_core_points = payload.include_core_points
         config.save(app_root)
         return {"includeCorePoints": config.include_core_points}
+
+    @app.post("/api/settings/paraformer-key")
+    def save_paraformer_key(payload: ParaformerKeyPayload):
+        if engine.active:
+            raise HTTPException(409, "请先停止实时识别，再修改 Paraformer API Key")
+        api_key = payload.api_key.strip()
+        if len(api_key) < 8:
+            raise HTTPException(400, "API Key 格式过短，请检查后重新输入")
+        if api_key != payload.confirm_api_key.strip():
+            raise HTTPException(400, "两次输入的 API Key 不一致")
+        config.paraformer_api_key = api_key
+        config.save(app_root)
+        os.environ["DASHSCOPE_API_KEY"] = api_key
+        masked = _mask_api_key(api_key)
+        bus.publish({"type": "paraformer_key_updated", "masked": masked})
+        return {"configured": True, "masked": masked}
 
     @app.post("/api/codex/login")
     def codex_login():

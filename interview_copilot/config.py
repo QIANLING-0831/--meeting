@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -10,6 +10,7 @@ class AppConfig:
     stt_provider: str = "paraformer"
     model_size: str = "base"
     paraformer_model: str = "paraformer-realtime-v2"
+    paraformer_api_key: str = field(default="", repr=False)
     device_name: str = ""
     sample_rate: int = 48_000
     block_seconds: float = 0.1
