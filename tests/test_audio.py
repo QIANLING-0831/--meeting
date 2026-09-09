@@ -44,3 +44,15 @@ def test_microphone_uses_portaudio_device_and_its_native_rate(monkeypatch):
     assert fake_sd.last_options["samplerate"] == 44_100
     assert received[0][0].shape == (4_410,)
     assert received[0][1] == 44_100
+
+
+def test_low_loopback_speech_is_boosted_without_amplifying_silence():
+    low_speech = np.full(1_600, 0.01, dtype=np.float32)
+    silence = np.zeros(1_600, dtype=np.float32)
+    normal = np.full(1_600, 0.08, dtype=np.float32)
+
+    boosted = audio.prepare_loopback_audio(low_speech)
+
+    assert np.allclose(boosted, 0.03)
+    assert np.array_equal(audio.prepare_loopback_audio(silence), silence)
+    assert np.array_equal(audio.prepare_loopback_audio(normal), normal)

@@ -60,7 +60,13 @@ def create_app(root: Path | None = None) -> FastAPI:
     latest_session = engine.sessions.latest()
     if latest_session:
         engine.set_session(latest_session)
-    audio = StreamingAudioCoordinator(config, engine.ingest_transcript)
+    audio = StreamingAudioCoordinator(
+        config,
+        engine.ingest_transcript,
+        lambda speaker, level: bus.publish(
+            {"type": "audio_level", "speaker": speaker, "level": level}
+        ),
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

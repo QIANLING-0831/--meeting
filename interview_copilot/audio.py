@@ -16,6 +16,24 @@ class AudioDevice:
     id: str
 
 
+def prepare_loopback_audio(
+    audio: np.ndarray,
+    *,
+    speech_floor_rms: float = 0.001,
+    target_rms: float = 0.03,
+    max_gain: float = 3.0,
+) -> np.ndarray:
+    """Conservatively lift quiet system speech without boosting digital silence."""
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.size == 0:
+        return samples
+    rms = float(np.sqrt(np.mean(np.square(samples))))
+    if rms < speech_floor_rms or rms >= target_rms:
+        return samples
+    gain = min(max_gain, target_rms / max(rms, speech_floor_rms))
+    return np.clip(samples * gain, -1.0, 1.0).astype(np.float32)
+
+
 def list_loopback_devices() -> list[AudioDevice]:
     devices = sc.all_microphones(include_loopback=True)
     loopbacks = [d for d in devices if getattr(d, "isloopback", False)]

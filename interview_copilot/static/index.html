@@ -35,6 +35,10 @@
         <select id="microphoneDevice" class="microphone-device hidden" aria-label="选择麦克风"></select>
         <button id="startButton" class="primary">开始</button><button id="stopButton" class="danger" disabled>停止</button>
       </div>
+      <div class="audio-levels">
+        <label>系统声 <meter id="interviewerLevel" min="0" max="1" value="0"></meter><span id="interviewerLevelText">未检测</span></label>
+        <label id="candidateLevelWrap" class="hidden">麦克风 <meter id="candidateLevel" min="0" max="1" value="0"></meter><span id="candidateLevelText">未检测</span></label>
+      </div>
       <div id="transcript" class="transcript"><div class="empty">系统声音会标为“面试官”，麦克风会标为“我”。</div></div>
       <div class="manual-box"><select id="manualSpeaker"><option value="interviewer">面试官</option><option value="candidate">我</option></select><input id="manualText" placeholder="可输入一句话测试，无需开启音频"><button id="sendTextButton" class="secondary">加入记录</button></div>
       <p class="hint">F8：回答最后一个问题　Esc：打断当前生成</p>

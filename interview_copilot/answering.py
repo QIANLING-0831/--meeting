@@ -10,6 +10,7 @@ from .event_bus import EventBus
 from .knowledge import KnowledgeIndex
 from .models import Speaker, TranscriptEntry
 from .question_detector import QuestionDetector
+from .question_assembler import QuestionAssembler
 from .session import InterviewSession, SessionManager
 
 
@@ -27,6 +28,7 @@ class InterviewEngine:
         self.sessions = SessionManager(root / "workspace" / "sessions")
         self.knowledge = KnowledgeIndex(root / "workspace")
         self.detector = QuestionDetector()
+        self.question_assembler = QuestionAssembler()
         self.codex = CodexAppServerClient(root, self._on_codex_event)
         self.session: InterviewSession | None = None
         self.auto_answer = True
@@ -37,6 +39,7 @@ class InterviewEngine:
 
     def set_session(self, session: InterviewSession) -> None:
         self.session = session
+        self.question_assembler.reset()
 
     def ingest_transcript(self, speaker: Speaker, text: str, final: bool = True) -> None:
         entry = TranscriptEntry(speaker=speaker, text=text.strip(), final=final)
@@ -47,11 +50,18 @@ class InterviewEngine:
         label = "面试官" if speaker == "interviewer" else "我"
         self.sessions.append_text(self.session.id, filename, f"- [{entry.created_at}] **{label}：** {entry.text}")
         if speaker == "interviewer":
-            candidate = self.detector.detect(entry.text)
+            direct_candidate = self.detector.detect(entry.text)
+            answerable_text = self.question_assembler.add_interviewer(
+                entry.text,
+                is_question=direct_candidate is not None,
+            )
+            candidate = self.detector.detect(answerable_text)
             if candidate:
                 self.bus.publish({"type": "question_candidate", "question": candidate.to_dict()})
                 if self.active and self.auto_answer:
                     self.schedule_answer(candidate.text)
+        else:
+            self.question_assembler.reset()
 
     def schedule_answer(self, question: str, delay: float = 1.5) -> None:
         if self._question_timer:

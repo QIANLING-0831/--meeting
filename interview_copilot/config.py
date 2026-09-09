@@ -19,7 +19,7 @@ class AppConfig:
     web_host: str = "127.0.0.1"
     web_port: int = 8765
     paraformer_vocabulary_id: str = ""
-    max_sentence_silence_ms: int = 800
+    max_sentence_silence_ms: int = 1_200
     microphone_name: str = ""
     microphone_enabled: bool = False
     codex_model: str = "gpt-5.6-luna"
