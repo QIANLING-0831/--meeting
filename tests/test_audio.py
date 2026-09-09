@@ -56,3 +56,55 @@ def test_low_loopback_speech_is_boosted_without_amplifying_silence():
     assert np.allclose(boosted, 0.03)
     assert np.array_equal(audio.prepare_loopback_audio(silence), silence)
     assert np.array_equal(audio.prepare_loopback_audio(normal), normal)
+
+
+def test_loopback_reopens_after_windows_invalidates_the_audio_device(monkeypatch):
+    stop = Event()
+    received = []
+    attempts = 0
+
+    class FakeRecorder:
+        def __init__(self, should_fail):
+            self.should_fail = should_fail
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def record(self, numframes):
+            if self.should_fail:
+                raise RuntimeError("Error 0x88890004")
+            return np.full((numframes, 1), 0.25, dtype=np.float32)
+
+    class FakeDevice:
+        def __init__(self, should_fail):
+            self.should_fail = should_fail
+
+        def recorder(self, **_options):
+            return FakeRecorder(self.should_fail)
+
+    def find_device(_name):
+        nonlocal attempts
+        attempts += 1
+        return FakeDevice(should_fail=attempts == 1)
+
+    monkeypatch.setattr(audio, "_find_device", find_device)
+
+    def on_block(block, rate):
+        received.append((block, rate))
+        stop.set()
+
+    audio.capture_loopback(
+        stop,
+        "",
+        16_000,
+        0.1,
+        on_block,
+        retry_delay_seconds=0,
+    )
+
+    assert attempts == 2
+    assert received[0][0].shape == (1_600,)
+    assert received[0][1] == 16_000

@@ -48,7 +48,12 @@ class StreamingAudioCoordinator:
         self.stop_event.set()
         for channel in self.channels:
             channel.thread.join(timeout=3)
-            channel.stream.stop()
+            try:
+                channel.stream.stop()
+            except Exception:
+                # One broken channel must not prevent the other channel or the
+                # application lifespan from shutting down cleanly.
+                pass
         self.channels.clear()
 
     def _start_channel(self, speaker: Speaker, capture, device_name: str) -> None:

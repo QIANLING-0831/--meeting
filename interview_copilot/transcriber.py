@@ -4,7 +4,7 @@ from http import HTTPStatus
 import os
 from pathlib import Path
 import tempfile
-from threading import Lock
+from threading import Event, Lock
 from typing import Callable, Protocol
 import wave
 
@@ -112,6 +112,7 @@ class AliyunParaformerStream:
 
         dashscope.api_key = resolved_key
         callback_target = on_text
+        recognition_failed = Event()
 
         class Callback(RecognitionCallback):
             def on_event(self, result: RecognitionResult) -> None:
@@ -122,6 +123,7 @@ class AliyunParaformerStream:
 
             def on_error(self, result: RecognitionResult) -> None:
                 message = getattr(result, "message", "未知错误")
+                recognition_failed.set()
                 callback_target(f"[识别失败] {message}", True)
 
         options = {
@@ -137,7 +139,10 @@ class AliyunParaformerStream:
         }
         if vocabulary_id:
             options["vocabulary_id"] = vocabulary_id
-        self._recognition = Recognition(**options)
+        self._recognition_class = Recognition
+        self._options = options
+        self._recognition = self._recognition_class(**self._options)
+        self._recognition_failed = recognition_failed
         self._started = False
         self._lock = Lock()
 
@@ -153,13 +158,37 @@ class AliyunParaformerStream:
         with self._lock:
             if not self._started:
                 raise RuntimeError("Paraformer 流尚未启动")
-            self._recognition.send_audio_frame(pcm)
+            if getattr(self, "_recognition_failed", None) and self._recognition_failed.is_set():
+                self._restart_locked()
+            try:
+                self._recognition.send_audio_frame(pcm)
+            except Exception:
+                self._restart_locked()
+                self._recognition.send_audio_frame(pcm)
+
+    def _restart_locked(self) -> None:
+        try:
+            self._recognition.stop()
+        except Exception:
+            pass
+        self._started = False
+        self._recognition = self._recognition_class(**self._options)
+        self._recognition.start()
+        self._started = True
+        failed = getattr(self, "_recognition_failed", None)
+        if failed:
+            failed.clear()
 
     def stop(self) -> None:
         with self._lock:
             if self._started:
-                self._recognition.stop()
                 self._started = False
+                try:
+                    self._recognition.stop()
+                except Exception:
+                    # Cleanup is idempotent: DashScope raises when its server has
+                    # already closed the recognition session.
+                    pass
 
 
 def create_transcriber(

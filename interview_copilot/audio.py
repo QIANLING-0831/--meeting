@@ -81,8 +81,8 @@ def capture_loopback(
     sample_rate: int,
     block_seconds: float,
     on_block: Callable[[np.ndarray, int], None],
+    retry_delay_seconds: float = 0.5,
 ) -> None:
-    device = _find_device(device_name)
     frames = max(1, int(sample_rate * block_seconds))
     with warnings.catch_warnings():
         # WASAPI can recover from an occasional dropped buffer. Soundcard emits
@@ -92,10 +92,21 @@ def capture_loopback(
             message="data discontinuity in recording",
             category=sc.SoundcardRuntimeWarning,
         )
-        with device.recorder(samplerate=sample_rate, channels=1) as recorder:
-            while not stop.is_set():
-                block = recorder.record(numframes=frames)
-                on_block(np.asarray(block[:, 0], dtype=np.float32), sample_rate)
+        while not stop.is_set():
+            try:
+                # Resolve the device again on every attempt. Windows invalidates
+                # existing WASAPI handles when a meeting app or output route resets.
+                device = _find_device(device_name)
+                with device.recorder(samplerate=sample_rate, channels=1) as recorder:
+                    while not stop.is_set():
+                        block = recorder.record(numframes=frames)
+                        on_block(np.asarray(block[:, 0], dtype=np.float32), sample_rate)
+            except Exception:
+                if stop.is_set():
+                    return
+                # Event.wait makes shutdown immediate while preventing a tight
+                # reconnect loop if Windows or Paraformer is temporarily offline.
+                stop.wait(retry_delay_seconds)
 
 
 def capture_microphone(

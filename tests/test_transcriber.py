@@ -3,6 +3,7 @@ import types
 import unittest
 import wave
 from pathlib import Path
+from threading import Lock
 from unittest.mock import Mock
 
 import numpy as np
@@ -96,6 +97,43 @@ class AliyunParaformerTest(unittest.TestCase):
             language_hints=["zh", "en"],
             callback=None,
         )
+
+    def test_stream_reconnects_once_when_sending_to_a_stopped_recognition(self):
+        from interview_copilot.transcriber import AliyunParaformerStream
+
+        first = Mock()
+        first.send_audio_frame.side_effect = RuntimeError("recognition has stopped")
+        second = Mock()
+        recognition_class = Mock(return_value=second)
+        stream = AliyunParaformerStream.__new__(AliyunParaformerStream)
+        stream._recognition = first
+        stream._recognition_class = recognition_class
+        stream._options = {"model": "test"}
+        stream._started = True
+        stream._lock = Lock()
+
+        stream.send(np.zeros(1_600, dtype=np.float32), 16_000)
+
+        first.stop.assert_called_once_with()
+        recognition_class.assert_called_once_with(model="test")
+        second.start.assert_called_once_with()
+        second.send_audio_frame.assert_called_once()
+
+    def test_stream_stop_is_safe_when_service_already_stopped(self):
+        from interview_copilot.transcriber import AliyunParaformerStream
+
+        recognition = Mock()
+        recognition.stop.side_effect = RuntimeError("Speech recognition has stopped")
+        stream = AliyunParaformerStream.__new__(AliyunParaformerStream)
+        stream._recognition = recognition
+        stream._started = True
+        stream._lock = Lock()
+
+        stream.stop()
+        stream.stop()
+
+        self.assertFalse(stream._started)
+        recognition.stop.assert_called_once_with()
 
 
 if __name__ == "__main__":
