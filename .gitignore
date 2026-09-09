@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+config.json
+.tmp-*
+workspace/sessions/
+workspace/knowledge/indexes/
+workspace/knowledge/sources/

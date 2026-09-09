@@ -1,0 +1,51 @@
+.section-actions { display: flex; align-items: center; gap: 8px; }
+.compact { padding: 6px 8px; font-size: 11px; }
+.setup, .setup-body, main { transition: grid-template-columns .2s ease, opacity .15s ease; }
+.setup.collapsed { padding: 18px 10px; overflow: hidden; }
+.setup.collapsed .setup-body,
+.setup.collapsed h2,
+.setup.collapsed #sessionBadge { display: none; }
+.setup.collapsed .section-title { justify-content: center; }
+.setup.collapsed .section-title > div:first-child { gap: 0; }
+.setup.collapsed .section-actions { position: absolute; margin-top: 68px; }
+.setup.collapsed #setupToggle { writing-mode: vertical-rl; padding: 9px 6px; }
+main.setup-collapsed { grid-template-columns: 72px minmax(420px, 1.05fr) minmax(520px, 1.45fr); }
+.utterance.provisional { opacity: .68; border-style: dashed; }
+.answer .knowledge-hits {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  overflow: visible;
+  padding: 10px 0;
+}
+.answer .hit {
+  min-width: 0;
+  white-space: pre-line;
+  line-height: 1.45;
+  max-height: 210px;
+  overflow: auto;
+  flex: auto;
+  font-size: 13px;
+}
+.answer .hit b { color: var(--green); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.model-controls { display: grid; grid-template-columns: minmax(150px, 1fr) 115px; gap: 8px; align-items: end; margin-bottom: 12px; }
+.model-controls label { margin: 0; }
+.model-controls select { margin-top: 4px; padding: 8px; }
+.model-controls .hint { grid-column: 1 / -1; margin: 0; }
+.model-controls .answer-option { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.model-controls .answer-option input { width: auto; margin: 0; }
+.microphone-device { width: min(250px, 35vw); margin: 0; padding: 8px; }
+
+@media (max-width: 1100px) {
+  main.setup-collapsed { grid-template-columns: 72px 1fr; }
+  .setup-collapsed .answer { grid-column: 1 / -1; }
+  .answer .knowledge-hits { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .setup.collapsed { padding: 18px; }
+  .setup.collapsed .section-title { justify-content: space-between; }
+  .setup.collapsed .section-actions { position: static; margin: 0; }
+  .setup.collapsed #setupToggle { writing-mode: initial; }
+  main.setup-collapsed { display: block; }
+}

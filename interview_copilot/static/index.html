@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interview Copilot</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/enhancements.css">
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">LOCAL INTERVIEW WORKSPACE</span><h1>Interview Copilot</h1></div>
+    <div class="status-row"><span id="paraformerStatus" class="pill">Paraformer 检查中</span><span id="codexStatus" class="pill">Codex 检查中</span><button id="loginButton" class="ghost">登录 Codex</button></div>
+  </header>
+
+  <main>
+    <section id="setupPanel" class="setup card">
+      <div class="section-title"><div><span class="step">01</span><h2>本次面试</h2></div><div class="section-actions"><span id="sessionBadge" class="muted">尚未准备</span><button id="setupToggle" class="ghost compact" aria-expanded="true">收起</button></div></div>
+      <div id="setupBody" class="setup-body">
+      <div class="two-col"><label>公司<input id="company" placeholder="例如：某科技公司"></label><label>岗位<input id="position" placeholder="例如：Agent 应用开发"></label></div>
+      <label>岗位 JD<textarea id="jd" rows="5" placeholder="粘贴本次岗位描述；它只在本地保存。"></textarea></label>
+      <label class="file-label">简历（PDF / MD / TXT）<input id="resume" type="file" accept=".pdf,.md,.txt"></label>
+      <div class="packs-head"><span>知识库组合</span><button id="reindexButton" class="text-button">重建索引</button></div>
+      <div id="packs" class="packs"><span class="muted">正在读取…</span></div>
+      <button id="prepareButton" class="primary wide">生成本次面试工作区</button>
+      <label id="factsWrap" class="hidden">已提取的候选人事实（确认后才参与回答）<textarea id="facts" rows="8"></textarea></label>
+      <button id="saveFactsButton" class="secondary wide hidden">确认并保存候选人事实</button>
+      </div>
+    </section>
+
+    <section class="live card">
+      <div class="section-title"><div><span class="step">02</span><h2>实时会话</h2></div><span id="liveBadge" class="live-dot">未开始</span></div>
+      <div class="controls">
+        <label class="switch"><input id="microphone" type="checkbox"><span></span>同时识别我的麦克风</label>
+        <select id="microphoneDevice" class="microphone-device hidden" aria-label="选择麦克风"></select>
+        <button id="startButton" class="primary">开始</button><button id="stopButton" class="danger" disabled>停止</button>
+      </div>
+      <div id="transcript" class="transcript"><div class="empty">系统声音会标为“面试官”，麦克风会标为“我”。</div></div>
+      <div class="manual-box"><select id="manualSpeaker"><option value="interviewer">面试官</option><option value="candidate">我</option></select><input id="manualText" placeholder="可输入一句话测试，无需开启音频"><button id="sendTextButton" class="secondary">加入记录</button></div>
+      <p class="hint">F8：回答最后一个问题　Esc：打断当前生成</p>
+    </section>
+
+    <section class="answer card">
+      <div class="section-title"><div><span class="step">03</span><h2>回答辅助</h2></div><span id="answerState" class="muted">等待问题</span></div>
+      <div class="model-controls"><label>回答模型<select id="modelSelect"><option>正在读取…</option></select></label><label>推理强度<select id="effortSelect"></select></label><label class="answer-option"><input id="includePoints" type="checkbox">同时生成核心要点</label><span id="modelHint" class="hint">默认只生成30～45秒口述回答</span></div>
+      <div id="questionBox" class="question-box">识别到问题后，本地资料要点会先出现。</div>
+      <div id="knowledgeHits" class="knowledge-hits"></div>
+      <article id="answerOutput" class="answer-output"><div class="empty">Codex 的精炼回答将在这里流式显示。</div></article>
+      <div class="answer-actions"><button id="answerButton" class="primary">回答当前问题</button><button id="interruptButton" class="ghost">打断</button></div>
+    </section>
+  </main>
+  <div id="toast" role="status"></div>
+  <script src="/static/transcript_state.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

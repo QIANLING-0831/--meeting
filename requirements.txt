@@ -1,0 +1,9 @@
+faster-whisper>=1.1,<2
+dashscope>=1.23.1,<2
+numpy>=1.26,<3
+soundcard>=0.4.4,<1
+sounddevice>=0.5,<1
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+python-multipart>=0.0.20,<1
+pypdf>=5.0,<7
