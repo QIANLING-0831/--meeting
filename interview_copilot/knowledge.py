@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from pathlib import Path
+
+import jieba
+import jieba.analyse
 
 from .models import KnowledgeHit
 
@@ -11,14 +15,17 @@ SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf"}
 GENERIC_QUERY_TERMS = {
     "什么", "怎么", "如何", "为何", "哪些", "多少", "是否", "可以", "能否",
     "不能", "介绍", "一下", "说说", "谈谈", "问题", "产生", "遇到", "出现",
-    "解决", "处理", "回答",
+    "解决", "处理", "回答", "怎么办", "怎么做", "用什么",
 }
-QUESTION_PHRASES = (
-    "怎么处理", "如何处理", "怎么解决", "如何解决", "怎么办", "为什么",
-    "是什么", "有哪几种", "有哪些", "能不能", "是否可以", "请介绍",
-    "介绍一下", "请问", "说说", "谈谈",
-)
 GENERIC_DOMAIN_TERMS = {"ai", "agent", "llm", "gpt", "模型", "系统", "项目", "大模型"}
+GENERIC_FRAGMENTS = GENERIC_QUERY_TERMS | {
+    "你们", "我们", "这个", "那个", "的是", "有的", "都了", "了解",
+    "最后", "当时", "然后", "进行", "使用", "采用", "一种", "哪些",
+    "为什么", "选择", "项目", "现场", "影响", "关键", "信息", "方案",
+}
+
+jieba.setLogLevel(logging.WARNING)
+jieba.initialize()
 
 
 class KnowledgeIndex:
@@ -66,7 +73,7 @@ class KnowledgeIndex:
         return {"files": indexed_files, "chunks": indexed_chunks}
 
     def search(self, query: str, packs: list[str], limit: int = 6) -> list[KnowledgeHit]:
-        terms = self._query_terms(query)
+        terms = self._salient_terms(query, packs)
         if not terms or not packs:
             return []
         placeholders = ",".join("?" for _ in packs)
@@ -86,13 +93,22 @@ class KnowledgeIndex:
             KnowledgeHit(row[0], row[1], row[2], row[3], -float(row[4]), self.answer_preview(row[3]))
             for row in rows
         ]
-        hits.extend(self._short_topic_search(query, packs, fetch_limit))
+        hits.extend(self._short_topic_search(terms, packs, fetch_limit))
         unique_hits = {
             (hit.source, hit.title, hit.content): hit
             for hit in hits
         }
-        lexical_terms = self._lexical_terms(query)
+        lexical_terms = terms
+        anchors = self._repeated_topic_terms(query)
         hits = list(unique_hits.values())
+        if anchors:
+            hits = [
+                hit for hit in hits
+                if any(
+                    anchor.casefold() in f"{hit.title}\n{hit.content}".casefold()
+                    for anchor in anchors
+                )
+            ]
         hits.sort(
             key=lambda hit: (
                 self._lexical_score(hit, lexical_terms),
@@ -104,9 +120,8 @@ class KnowledgeIndex:
         )
         return hits[:limit]
 
-    def _short_topic_search(self, query: str, packs: list[str], limit: int) -> list[KnowledgeHit]:
+    def _short_topic_search(self, terms: list[str], packs: list[str], limit: int) -> list[KnowledgeHit]:
         """Recall short Chinese topics that FTS trigram cannot index, such as “幻觉”."""
-        terms = self._lexical_terms(query)
         if not terms:
             return []
         topic_terms = [term for term in terms if term.casefold() not in GENERIC_DOMAIN_TERMS]
@@ -129,6 +144,23 @@ class KnowledgeIndex:
             for row in rows
         ]
 
+    def _salient_terms(self, query: str, packs: list[str], limit: int = 12) -> list[str]:
+        """Keep complete words and technical phrases; character n-grams are not semantic units."""
+        del packs  # Kept in the signature because selection is scoped by the caller.
+        terms = self._lexical_terms(query)
+        topic_terms = [term for term in terms if term.casefold() not in GENERIC_DOMAIN_TERMS]
+        return (topic_terms or terms)[:limit]
+
+    @staticmethod
+    def _repeated_topic_terms(query: str) -> list[str]:
+        folded = query.casefold()
+        return [
+            term for term in KnowledgeIndex._lexical_terms(query)
+            if len(term) == 2
+            and term.casefold() not in GENERIC_FRAGMENTS
+            and folded.count(term.casefold()) >= 2
+        ]
+
     @staticmethod
     def _lexical_score(hit: KnowledgeHit, terms: list[str]) -> int:
         return KnowledgeIndex._lexical_score_text(hit.title, hit.content, terms)
@@ -145,7 +177,9 @@ class KnowledgeIndex:
             if folded in GENERIC_DOMAIN_TERMS:
                 score += 1
             else:
-                score += len(term) * (4 if folded in title_folded else 1)
+                title_count = title_folded.count(folded)
+                content_count = combined.count(folded)
+                score += len(term) * (4 * title_count + min(2, content_count))
         return score
 
     def _fallback_search(self, query: str, packs: list[str], limit: int) -> list[KnowledgeHit]:
@@ -246,24 +280,16 @@ class KnowledgeIndex:
             yield title, "\n".join(buffer).strip()
 
     @staticmethod
-    def _query_terms(query: str) -> list[str]:
-        latin = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", query)
-        chinese = [part for part in re.split(r"[，。？！、；：\s]+", query) if len(part) >= 2]
-        return list(dict.fromkeys(latin + chinese))
-
-    @staticmethod
     def _lexical_terms(query: str) -> list[str]:
-        terms = re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{1,}", query)
-        for run in re.findall(r"[\u4e00-\u9fff]+", query):
-            cleaned = run
-            for phrase in QUESTION_PHRASES:
-                cleaned = cleaned.replace(phrase, "")
-            cleaned = cleaned.strip("的了呢吗啊吧呀嘛")
-            if len(cleaned) >= 2 and cleaned not in GENERIC_QUERY_TERMS:
-                terms.append(cleaned)
-            terms.extend(
-                cleaned[index : index + 2]
-                for index in range(max(0, len(cleaned) - 1))
-                if cleaned[index : index + 2] not in GENERIC_QUERY_TERMS
+        weighted = [term for term, _weight in jieba.analyse.extract_tags(query, topK=16, withWeight=True)]
+        segmented = jieba.lcut(query, cut_all=False)
+        terms = weighted + segmented
+        return list(
+            dict.fromkeys(
+                term.strip()
+                for term in terms
+                if len(term.strip()) >= 2
+                and term.strip().casefold() not in GENERIC_FRAGMENTS
+                and re.search(r"[A-Za-z0-9\u4e00-\u9fff]", term)
             )
-        return list(dict.fromkeys(terms))[:12]
+        )

@@ -26,3 +26,20 @@ def test_prepare_session_without_resume(tmp_path):
         assert response.status_code == 200
         assert response.json()["session"]["knowledge_packs"] == ["agent"]
         assert "候选人事实" in response.json()["candidateFacts"]
+
+
+def test_codex_warmup_prepares_thread_before_first_question(tmp_path, monkeypatch):
+    app = create_app(tmp_path)
+    prepared = []
+    monkeypatch.setattr(
+        app.state.engine.codex,
+        "ensure_thread",
+        lambda **options: prepared.append(options) or "thread-ready",
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/codex/warmup")
+
+    assert response.status_code == 200
+    assert response.json() == {"ready": True}
+    assert prepared[0]["model"] == app.state.engine.config.codex_model

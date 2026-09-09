@@ -82,3 +82,47 @@ def test_search_recalls_two_character_topic_from_natural_question(tmp_path):
     assert hits
     assert hits[0].source.endswith("hallucination.md")
     assert "多层防线" in hits[0].answer_preview
+
+
+def test_framework_selection_question_does_not_rank_tool_routing_first(tmp_path):
+    pack = tmp_path / "knowledge" / "packs" / "agent"
+    pack.mkdir(parents=True)
+    (pack / "tools.md").write_text(
+        """### Q：你们工具库有上百个工具，怎么让模型快速选对？
+**高手答**：先做工具检索，再让模型选择候选工具。
+""",
+        encoding="utf-8",
+    )
+    (pack / "frameworks.md").write_text(
+        """### Q：LangChain 和 LangGraph 有什么区别？分别适合什么场景？
+**高手答**：LangChain 适合线性流程；LangGraph 适合有状态图、循环和断点恢复。框架选型要结合控制流和状态管理。
+""",
+        encoding="utf-8",
+    )
+    index = KnowledgeIndex(tmp_path)
+    index.rebuild()
+
+    hits = index.search(
+        "你们这个 Agent 项目是用什么框架？为什么最后选择这个，当时怎么做选型的，你都了解哪些框架？",
+        ["agent"],
+    )
+
+    assert hits
+    assert hits[0].source.endswith("frameworks.md")
+
+
+def test_search_returns_no_hit_instead_of_unrelated_tool_question(tmp_path):
+    pack = tmp_path / "knowledge" / "packs" / "agent"
+    pack.mkdir(parents=True)
+    (pack / "tools.md").write_text(
+        """### Q：你们工具库有上百个工具，怎么让模型快速选对？
+**高手答**：使用分层路由和语义检索缩小候选工具范围。
+""",
+        encoding="utf-8",
+    )
+    index = KnowledgeIndex(tmp_path)
+    index.rebuild()
+
+    hits = index.search("你们现场使用什么框架，如何做框架选型？", ["agent"])
+
+    assert hits == []

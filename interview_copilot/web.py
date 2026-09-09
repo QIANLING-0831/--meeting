@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .answering import InterviewEngine
+from .answering import ANSWER_INSTRUCTIONS, InterviewEngine
 from .audio import default_input_device_id, list_input_devices, list_loopback_devices
 from .config import AppConfig
 from .event_bus import EventBus
@@ -220,6 +220,17 @@ def create_app(root: Path | None = None) -> FastAPI:
             }
         except Exception as exc:
             raise HTTPException(503, f"Codex 模型读取失败：{exc}") from exc
+
+    @app.post("/api/codex/warmup")
+    def codex_warmup():
+        try:
+            engine.codex.ensure_thread(
+                model=config.codex_model,
+                instructions=ANSWER_INSTRUCTIONS,
+            )
+            return {"ready": True}
+        except Exception as exc:
+            raise HTTPException(503, f"Codex 预热失败：{exc}") from exc
 
     @app.post("/api/settings/model")
     def select_model(payload: ModelPayload):

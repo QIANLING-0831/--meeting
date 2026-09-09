@@ -40,6 +40,7 @@ class InterviewEngine:
         self._answer_generation = 0
         self._answer_watchdog: threading.Timer | None = None
         self._first_token_retry_used = False
+        self._obsolete_turn_ids: set[str] = set()
 
     def set_session(self, session: InterviewSession) -> None:
         self.session = session
@@ -105,7 +106,7 @@ class InterviewEngine:
             self._start_codex_turn(prompt, reconnect_on_timeout=True)
             self._arm_answer_watchdog(generation)
         except Exception as exc:
-            self.bus.publish({"type": "error", "message": f"Codex 调用失败：{exc}"})
+            self._publish_error(f"Codex 调用失败：{exc}")
 
     def _start_codex_turn(self, prompt: str, *, reconnect_on_timeout: bool) -> None:
         try:
@@ -158,18 +159,44 @@ class InterviewEngine:
         if generation != self._answer_generation or self._answer_buffer:
             return
         if self._first_token_retry_used:
-            self.bus.publish(
-                {
-                    "type": "error",
-                    "message": "Codex 原会话仍未返回，可按 F8 在同一会话中重试",
-                }
-            )
+            try:
+                self.codex.interrupt()
+            except Exception:
+                pass
+            self.codex.turn_id = None
+            self._publish_error("Codex 原会话仍未返回，可按 F8 在同一会话中重试")
             return
         self._first_token_retry_used = True
-        message = "Codex 响应较慢，继续等待原会话（不重连）"
+        if not self.codex.turn_id:
+            message = "Codex 请求状态尚未确认，继续等待原请求（不重复发送）"
+            self.bus.publish({"type": "answer_retrying", "message": message})
+            self.bus.publish({"type": "notice", "message": message})
+            self._arm_answer_watchdog(generation)
+            return
+        message = "Codex 首字超时，正在原会话内重试（不重连）"
         self.bus.publish({"type": "answer_retrying", "message": message})
         self.bus.publish({"type": "notice", "message": message})
-        self._arm_answer_watchdog(generation)
+        old_turn_id = self.codex.turn_id
+        if old_turn_id:
+            self._obsolete_turn_ids.add(old_turn_id)
+        try:
+            self.codex.interrupt()
+            self.codex.turn_id = None
+            self._answer_buffer = ""
+            self._start_codex_turn(self._answer_prompt, reconnect_on_timeout=False)
+            self._arm_answer_watchdog(generation)
+        except Exception as exc:
+            self._publish_error(f"Codex 同会话重试失败：{exc}")
+
+    def _publish_error(self, message: str) -> None:
+        self.bus.publish({"type": "error", "message": message})
+        if self.session:
+            stamp = datetime.now().isoformat(timespec="seconds")
+            self.sessions.append_text(
+                self.session.id,
+                "runtime-errors.md",
+                f"- [{stamp}] {message}",
+            )
 
     def _build_prompt(self, question, hits) -> str:
         assert self.session
@@ -211,6 +238,11 @@ class InterviewEngine:
     def _on_codex_event(self, event: dict) -> None:
         method = event.get("method")
         params = event.get("params") or {}
+        event_turn_id = params.get("turnId") or (params.get("turn") or {}).get("id")
+        if event_turn_id in self._obsolete_turn_ids:
+            if method == "turn/completed":
+                self._obsolete_turn_ids.discard(event_turn_id)
+            return
         if method == "item/agentMessage/delta":
             delta = params.get("delta", "")
             if not self._answer_buffer:
@@ -230,6 +262,6 @@ class InterviewEngine:
             self.bus.publish({"type": "answer_completed", "status": status})
             self.codex.turn_id = None
         elif method == "server/error":
-            self.bus.publish({"type": "error", "message": params.get("message", "Codex 服务异常")})
+            self._publish_error(params.get("message", "Codex 服务异常"))
         elif method in ("account/updated", "account/login/completed"):
             self.bus.publish({"type": "codex_account", "data": params})

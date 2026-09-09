@@ -95,7 +95,12 @@ class SessionManager:
         path.write_text(text.strip(), encoding="utf-8")
 
     def append_text(self, session_id: str, filename: str, text: str) -> None:
-        allowed = {"interviewer-transcript.md", "candidate-transcript.md", "answers.md"}
+        allowed = {
+            "interviewer-transcript.md",
+            "candidate-transcript.md",
+            "answers.md",
+            "runtime-errors.md",
+        }
         if filename not in allowed:
             raise ValueError("不允许写入该会话文件")
         path = self._safe_session_path(session_id) / filename

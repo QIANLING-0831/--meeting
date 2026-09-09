@@ -26,6 +26,7 @@ async function loadPacks(){
   data.packs.forEach((name,i)=>{const label=document.createElement("label");label.className="pack";const input=document.createElement("input");input.type="checkbox";input.value=name;input.checked=restoredSession?restoredSession.knowledge_packs.includes(name):(i===0||name==="agent");label.append(input,document.createTextNode(name));wrap.append(label)})
 }
 async function loadModels(){const data=await api("/api/codex/models");codexModels=data.models;const select=$("modelSelect");select.replaceChildren();codexModels.forEach(model=>{const option=document.createElement("option");option.value=model.model;option.textContent=model.displayName;option.selected=model.model===data.selectedModel;select.append(option)});renderEfforts(data.selectedEffort);updateModelHint()}
+async function warmCodex(){await api("/api/codex/warmup",{method:"POST"})}
 function renderEfforts(preferred="low"){const model=codexModels.find(item=>item.model===$("modelSelect").value);const select=$("effortSelect");select.replaceChildren();(model?.supportedReasoningEfforts||[]).forEach(item=>{const option=document.createElement("option");option.value=item.reasoningEffort;option.textContent=item.reasoningEffort;option.selected=item.reasoningEffort===preferred;select.append(option)})}
 function updateModelHint(){const model=$("modelSelect").value;$("modelHint").textContent=model.includes("luna")?"推荐：实时面试速度优先":"更强模型可能回答更细，但首字延迟通常更高"}
 async function saveModel(){try{await api("/api/settings/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:$("modelSelect").value,effort:$("effortSelect").value})});updateModelHint()}catch(e){toast(e.message,true)}}
@@ -55,7 +56,12 @@ function connect(){const ws=new WebSocket(`${location.protocol==="https:"?"wss":
 function handleEvent(event){
   if(event.type==="transcript")addTranscript(event.entry);
   if(event.type==="question_candidate"){currentQuestion=event.question.text;$("questionBox").textContent=currentQuestion;$("answerState").textContent=`已识别 · ${event.question.question_type}`}
-  if(event.type==="knowledge_hits"){currentQuestion=event.question;$("questionBox").textContent=currentQuestion;const wrap=$("knowledgeHits");wrap.replaceChildren();event.hits.slice(0,1).forEach(h=>{const card=document.createElement("div");card.className="hit";const badge=document.createElement("b");badge.textContent=`${h.pack} · 题库速答`;const matchedQuestion=document.createElement("div");matchedQuestion.className="hit-question";matchedQuestion.textContent=`匹配原题：${String(h.title||"未命名条目").replace(/^Q[：:]\s*/u,"")}`;const snippet=document.createElement("span");snippet.textContent=window.compactKnowledgeAnswer(h.answer_preview||h.content).slice(0,620);card.append(badge,matchedQuestion,snippet);wrap.append(card)})}
+  if(event.type==="knowledge_hits"){
+    currentQuestion=event.question;$("questionBox").textContent=currentQuestion;
+    const wrap=$("knowledgeHits");wrap.replaceChildren();
+    if(!event.hits.length){const empty=document.createElement("div");empty.className="hit";empty.textContent="题库中未找到高相关原题，以下回答由 Codex 结合通用知识生成。";wrap.append(empty)}
+    event.hits.slice(0,1).forEach(h=>{const card=document.createElement("div");card.className="hit";const badge=document.createElement("b");badge.textContent=`${h.pack} · 题库速答`;const matchedQuestion=document.createElement("div");matchedQuestion.className="hit-question";matchedQuestion.textContent=`匹配原题：${String(h.title||"未命名条目").replace(/^Q[：:]\s*/u,"")}`;const snippet=document.createElement("span");snippet.textContent=window.compactKnowledgeAnswer(h.answer_preview||h.content).slice(0,620);card.append(badge,matchedQuestion,snippet);wrap.append(card)})
+  }
   if(event.type==="answer_started"){answerBuffer="";$("answerOutput").textContent="";$("answerState").textContent="Codex 正在生成…"}
   if(event.type==="answer_retrying")$("answerState").textContent=event.message||"Codex 响应较慢，继续等待…";
   if(event.type==="answer_delta"){answerBuffer+=event.delta;$("answerOutput").textContent=answerBuffer;$("answerOutput").scrollTop=$("answerOutput").scrollHeight}
@@ -63,10 +69,10 @@ function handleEvent(event){
   if(event.type==="audio_level"){const prefix=event.speaker==="interviewer"?"interviewer":"candidate";const level=Math.max(0,Math.min(1,Number(event.level)||0));$(prefix+"Level").value=level;$(prefix+"LevelText").textContent=level<.18?"偏小":level>.82?"过大":"正常"}
   if(event.type==="interview_state")setRunning(event.running);
   if(event.type==="notice")toast(event.message);
-  if(event.type==="error"){$("answerState").textContent="连接失败 · 可按 F8 重试";toast(event.message,true)}
+  if(event.type==="error"){$("answerState").textContent=event.message||"回答失败 · 可按 F8 重试";toast(event.message,true)}
 }
 document.addEventListener("keydown",e=>{if(e.key==="F8"){e.preventDefault();requestAnswer(currentQuestion||lastInterviewerText)}if(e.key==="Escape")$("interruptButton").click()});
 function collapseSetup(collapsed){$("setupPanel").classList.toggle("collapsed",collapsed);document.querySelector("main").classList.toggle("setup-collapsed",collapsed);$("setupToggle").textContent=collapsed?"展开":"收起";$("setupToggle").setAttribute("aria-expanded",String(!collapsed))}
 $("setupToggle").onclick=()=>collapseSetup(!$("setupPanel").classList.contains("collapsed"));
-async function initialize(){await loadStatus();await Promise.all([loadPacks(),loadModels()]).catch(e=>toast(e.message,true));connect()}
+async function initialize(){await loadStatus();await Promise.all([loadPacks(),loadModels()]).catch(e=>toast(e.message,true));connect();warmCodex().catch(()=>{})}
 initialize();

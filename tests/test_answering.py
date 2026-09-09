@@ -159,27 +159,50 @@ def test_turn_start_timeout_keeps_existing_codex_session(tmp_path, monkeypatch):
     assert notices == ["Codex 请求确认较慢，保留原会话并继续等待"]
 
 
-def test_first_token_timeout_keeps_original_turn_and_waits_once(tmp_path, monkeypatch):
+def test_first_token_timeout_retries_turn_in_same_codex_session(tmp_path, monkeypatch):
     engine = build_engine(tmp_path, False)
     events = engine.bus.subscribe()
     engine._answer_generation = 7
     engine._answer_buffer = ""
+    engine.codex.turn_id = "turn-old-old"
     closes = []
-    watchdogs = []
+    actions = []
     monkeypatch.setattr(engine.codex, "close", lambda: closes.append("close"))
-    monkeypatch.setattr(engine, "_arm_answer_watchdog", watchdogs.append)
+    monkeypatch.setattr(engine.codex, "interrupt", lambda: actions.append("interrupt"))
+    monkeypatch.setattr(
+        engine,
+        "_start_codex_turn",
+        lambda prompt, **_kwargs: actions.append(("start", prompt)),
+    )
+    monkeypatch.setattr(engine, "_arm_answer_watchdog", lambda generation: actions.append(("watchdog", generation)))
+    engine._answer_prompt = "回答这个问题"
 
     engine._handle_first_token_timeout(7)
 
     assert closes == []
-    assert watchdogs == [7]
+    assert actions == ["interrupt", ("start", "回答这个问题"), ("watchdog", 7)]
     assert engine._first_token_retry_used is True
     retry_events = []
     while not events.empty():
         event = events.get_nowait()
         if event["type"] == "answer_retrying":
             retry_events.append(event["message"])
-    assert retry_events == ["Codex 响应较慢，继续等待原会话（不重连）"]
+    assert retry_events == ["Codex 首字超时，正在原会话内重试（不重连）"]
+
+
+def test_unknown_turn_after_start_timeout_is_not_sent_twice(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    engine._answer_generation = 2
+    engine._answer_buffer = ""
+    engine._answer_prompt = "回答"
+    engine.codex.turn_id = None
+    starts = []
+    monkeypatch.setattr(engine, "_start_codex_turn", lambda *_args, **_kwargs: starts.append("start"))
+    monkeypatch.setattr(engine, "_arm_answer_watchdog", lambda _generation: None)
+
+    engine._handle_first_token_timeout(2)
+
+    assert starts == []
 
 
 def test_second_first_token_timeout_stops_retrying(tmp_path):
@@ -196,3 +219,25 @@ def test_second_first_token_timeout_stops_retrying(tmp_path):
         if event["type"] == "error":
             errors.append(event["message"])
     assert errors == ["Codex 原会话仍未返回，可按 F8 在同一会话中重试"]
+
+
+def test_late_events_from_interrupted_turn_are_ignored(tmp_path):
+    engine = build_engine(tmp_path, False)
+    events = engine.bus.subscribe()
+    engine.codex.turn_id = "turn-new"
+    engine._obsolete_turn_ids.add("turn-old")
+
+    engine._on_codex_event(
+        {"method": "item/agentMessage/delta", "params": {"turnId": "turn-old", "delta": "旧回答"}}
+    )
+    engine._on_codex_event(
+        {"method": "item/agentMessage/delta", "params": {"turnId": "turn-new", "delta": "新回答"}}
+    )
+
+    assert engine._answer_buffer == "新回答"
+    deltas = []
+    while not events.empty():
+        event = events.get_nowait()
+        if event["type"] == "answer_delta":
+            deltas.append(event["delta"])
+    assert deltas == ["新回答"]

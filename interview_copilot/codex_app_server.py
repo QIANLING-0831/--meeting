@@ -23,6 +23,7 @@ class CodexAppServerClient:
         self._next_id = 1
         self._pending: dict[int, queue.Queue] = {}
         self._write_lock = threading.Lock()
+        self._thread_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
         self.thread_id: str | None = None
         self.turn_id: str | None = None
@@ -88,21 +89,22 @@ class CodexAppServerClient:
             return self.request("account/login/start", params, timeout=15)
 
     def ensure_thread(self, *, model: str = "", instructions: str = "") -> str:
-        self.start()
-        if self.thread_id:
+        with self._thread_lock:
+            self.start()
+            if self.thread_id:
+                return self.thread_id
+            params: dict = {
+                "cwd": str(self.cwd),
+                "approvalPolicy": "never",
+                "sandbox": "read-only",
+                "ephemeral": False,
+                "developerInstructions": instructions,
+            }
+            if model:
+                params["model"] = model
+            result = self.request("thread/start", params, timeout=10)
+            self.thread_id = result["thread"]["id"]
             return self.thread_id
-        params: dict = {
-            "cwd": str(self.cwd),
-            "approvalPolicy": "never",
-            "sandbox": "read-only",
-            "ephemeral": False,
-            "developerInstructions": instructions,
-        }
-        if model:
-            params["model"] = model
-        result = self.request("thread/start", params, timeout=10)
-        self.thread_id = result["thread"]["id"]
-        return self.thread_id
 
     def start_turn(self, prompt: str, *, model: str = "", effort: str = "") -> dict:
         if not self.thread_id:
