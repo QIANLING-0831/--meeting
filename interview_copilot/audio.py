@@ -81,9 +81,10 @@ def capture_loopback(
     sample_rate: int,
     block_seconds: float,
     on_block: Callable[[np.ndarray, int], None],
-    retry_delay_seconds: float = 0.5,
+    retry_delay_seconds: float = 0.1,
 ) -> None:
     frames = max(1, int(sample_rate * block_seconds))
+    consecutive_failures = 0
     with warnings.catch_warnings():
         # WASAPI can recover from an occasional dropped buffer. Soundcard emits
         # this warning for every gap, which otherwise floods the live transcript.
@@ -100,13 +101,18 @@ def capture_loopback(
                 with device.recorder(samplerate=sample_rate, channels=1) as recorder:
                     while not stop.is_set():
                         block = recorder.record(numframes=frames)
+                        consecutive_failures = 0
                         on_block(np.asarray(block[:, 0], dtype=np.float32), sample_rate)
             except Exception:
                 if stop.is_set():
                     return
                 # Event.wait makes shutdown immediate while preventing a tight
                 # reconnect loop if Windows or Paraformer is temporarily offline.
-                stop.wait(retry_delay_seconds)
+                # The first recovery is nearly immediate; a sustained outage
+                # backs off to one attempt per second.
+                consecutive_failures += 1
+                delay = min(1.0, retry_delay_seconds * (2 ** min(consecutive_failures - 1, 4)))
+                stop.wait(delay)
 
 
 def capture_microphone(
