@@ -31,6 +31,7 @@ def test_spoken_only_prompt_is_default(tmp_path):
     prompt = build_engine(tmp_path, False)._build_prompt("什么是 ReAct？", [])
     assert "只输出一段30～45秒" in prompt
     assert "不要核心要点列表" in prompt
+    assert "第一句先用15～30个字直接给出结论" in prompt
     assert "### 核心要点" not in prompt
 
 
@@ -103,7 +104,7 @@ def test_auto_answer_schedules_only_the_assembled_question(tmp_path, monkeypatch
     assert scheduled == ["你说一下C++的特性有哪些？"]
 
 
-def test_answer_reconnects_once_when_codex_start_times_out(tmp_path, monkeypatch):
+def test_answer_reconnects_once_only_when_codex_process_start_times_out(tmp_path, monkeypatch):
     engine = build_engine(tmp_path, False)
     events = engine.bus.subscribe()
     attempts = []
@@ -129,36 +130,56 @@ def test_answer_reconnects_once_when_codex_start_times_out(tmp_path, monkeypatch
         event = events.get_nowait()
         if event["type"] == "notice":
             notices.append(event["message"])
-    assert notices == ["Codex 连接超时，正在自动重连（1/1）"]
+    assert notices == ["Codex 启动超时，正在执行最后兜底重建（1/1）"]
 
 
-def test_first_token_timeout_restarts_turn_once(tmp_path, monkeypatch):
+def test_turn_start_timeout_keeps_existing_codex_session(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    events = engine.bus.subscribe()
+    closes = []
+    monkeypatch.setattr(engine.codex, "ensure_thread", lambda **_kwargs: "thread-1")
+    monkeypatch.setattr(
+        engine.codex,
+        "start_turn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CodexAppServerError("Codex 请求超时：turn/start")
+        ),
+    )
+    monkeypatch.setattr(engine.codex, "close", lambda: closes.append("close"))
+
+    engine.answer("什么是 LLM？")
+    engine._cancel_answer_watchdog()
+
+    assert closes == []
+    notices = []
+    while not events.empty():
+        event = events.get_nowait()
+        if event["type"] == "notice":
+            notices.append(event["message"])
+    assert notices == ["Codex 请求确认较慢，保留原会话并继续等待"]
+
+
+def test_first_token_timeout_keeps_original_turn_and_waits_once(tmp_path, monkeypatch):
     engine = build_engine(tmp_path, False)
     events = engine.bus.subscribe()
     engine._answer_generation = 7
-    engine._answer_prompt = "回答这个问题"
     engine._answer_buffer = ""
     closes = []
-    starts = []
+    watchdogs = []
     monkeypatch.setattr(engine.codex, "close", lambda: closes.append("close"))
-    monkeypatch.setattr(
-        engine,
-        "_start_codex_turn",
-        lambda prompt, **_kwargs: starts.append(prompt),
-    )
-    monkeypatch.setattr(engine, "_arm_answer_watchdog", lambda generation: starts.append(generation))
+    monkeypatch.setattr(engine, "_arm_answer_watchdog", watchdogs.append)
 
     engine._handle_first_token_timeout(7)
 
-    assert closes == ["close"]
-    assert starts == ["回答这个问题", 7]
+    assert closes == []
+    assert watchdogs == [7]
     assert engine._first_token_retry_used is True
     retry_events = []
     while not events.empty():
         event = events.get_nowait()
         if event["type"] == "answer_retrying":
             retry_events.append(event["message"])
-    assert retry_events == ["Codex 首字响应超时，正在自动重连（1/1）"]
+    assert retry_events == ["Codex 响应较慢，继续等待原会话（不重连）"]
 
 
 def test_second_first_token_timeout_stops_retrying(tmp_path):
@@ -174,4 +195,4 @@ def test_second_first_token_timeout_stops_retrying(tmp_path):
         event = events.get_nowait()
         if event["type"] == "error":
             errors.append(event["message"])
-    assert errors == ["Codex 重连后仍未在限定时间内返回，可按 F8 再试一次"]
+    assert errors == ["Codex 原会话仍未返回，可按 F8 在同一会话中重试"]

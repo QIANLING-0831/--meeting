@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from http import HTTPStatus
 import os
 from pathlib import Path
@@ -113,13 +114,21 @@ class AliyunParaformerStream:
         dashscope.api_key = resolved_key
         callback_target = on_text
         recognition_failed = Event()
+        pending_frames: deque[bytes] = deque()
+        pending_lock = Lock()
+        pending_size = [0]
 
         class Callback(RecognitionCallback):
             def on_event(self, result: RecognitionResult) -> None:
                 sentence = result.get_sentence() or {}
                 text = sentence.get("text", "").strip()
                 if text:
-                    callback_target(text, bool(RecognitionResult.is_sentence_end(sentence)))
+                    is_final = bool(RecognitionResult.is_sentence_end(sentence))
+                    callback_target(text, is_final)
+                    if is_final:
+                        with pending_lock:
+                            pending_frames.clear()
+                            pending_size[0] = 0
 
             def on_error(self, result: RecognitionResult) -> None:
                 message = getattr(result, "message", "未知错误")
@@ -143,6 +152,10 @@ class AliyunParaformerStream:
         self._options = options
         self._recognition = self._recognition_class(**self._options)
         self._recognition_failed = recognition_failed
+        self._pending_frames = pending_frames
+        self._pending_lock = pending_lock
+        self._pending_size = pending_size
+        self._max_pending_bytes = 20 * 16_000 * 2
         self._started = False
         self._lock = Lock()
 
@@ -158,13 +171,30 @@ class AliyunParaformerStream:
         with self._lock:
             if not self._started:
                 raise RuntimeError("Paraformer 流尚未启动")
+            self._remember_pending_frame(pcm)
             if getattr(self, "_recognition_failed", None) and self._recognition_failed.is_set():
                 self._restart_locked()
+                return
             try:
                 self._recognition.send_audio_frame(pcm)
             except Exception:
                 self._restart_locked()
-                self._recognition.send_audio_frame(pcm)
+
+    def _remember_pending_frame(self, pcm: bytes) -> None:
+        if not hasattr(self, "_pending_frames"):
+            self._pending_frames = deque()
+            self._pending_lock = Lock()
+            self._pending_size = [0]
+            self._max_pending_bytes = 20 * 16_000 * 2
+        with self._pending_lock:
+            self._pending_frames.append(pcm)
+            self._pending_size[0] += len(pcm)
+            while self._pending_size[0] > self._max_pending_bytes:
+                self._pending_size[0] -= len(self._pending_frames.popleft())
+
+    def _pending_snapshot(self) -> list[bytes]:
+        with self._pending_lock:
+            return list(self._pending_frames)
 
     def _restart_locked(self) -> None:
         try:
@@ -178,6 +208,10 @@ class AliyunParaformerStream:
         failed = getattr(self, "_recognition_failed", None)
         if failed:
             failed.clear()
+        # Replay only audio that has not yet produced a final sentence. This
+        # preserves a question split by a transient recognition disconnect.
+        for frame in self._pending_snapshot():
+            self._recognition.send_audio_frame(frame)
 
     def stop(self) -> None:
         with self._lock:

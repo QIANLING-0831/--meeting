@@ -119,6 +119,27 @@ class AliyunParaformerTest(unittest.TestCase):
         second.start.assert_called_once_with()
         second.send_audio_frame.assert_called_once()
 
+    def test_stream_replays_unfinished_sentence_after_reconnect(self):
+        from interview_copilot.transcriber import AliyunParaformerStream
+
+        first = Mock()
+        first.send_audio_frame.side_effect = [None, RuntimeError("connection lost")]
+        second = Mock()
+        recognition_class = Mock(return_value=second)
+        stream = AliyunParaformerStream.__new__(AliyunParaformerStream)
+        stream._recognition = first
+        stream._recognition_class = recognition_class
+        stream._options = {"model": "test"}
+        stream._started = True
+        stream._lock = Lock()
+
+        stream.send(np.full(1_600, 0.1, dtype=np.float32), 16_000)
+        stream.send(np.full(1_600, 0.2, dtype=np.float32), 16_000)
+
+        replayed = [call.args[0] for call in second.send_audio_frame.call_args_list]
+        self.assertEqual(len(replayed), 2)
+        self.assertNotEqual(replayed[0], replayed[1])
+
     def test_stream_stop_is_safe_when_service_already_stopped(self):
         from interview_copilot.transcriber import AliyunParaformerStream
 

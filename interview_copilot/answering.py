@@ -110,24 +110,32 @@ class InterviewEngine:
     def _start_codex_turn(self, prompt: str, *, reconnect_on_timeout: bool) -> None:
         try:
             self.codex.ensure_thread(model=self.config.codex_model, instructions=ANSWER_INSTRUCTIONS)
+        except CodexAppServerError as exc:
+            if not reconnect_on_timeout or "超时" not in str(exc):
+                raise
+            # No usable thread exists at this point, so rebuilding the local
+            # process is the last-resort bootstrap path rather than the normal
+            # response-timeout behavior.
+            message = "Codex 启动超时，正在执行最后兜底重建（1/1）"
+            self.bus.publish({"type": "answer_retrying", "message": message})
+            self.bus.publish({"type": "notice", "message": message})
+            self.codex.close()
+            self.codex.ensure_thread(model=self.config.codex_model, instructions=ANSWER_INSTRUCTIONS)
+        try:
             self.codex.start_turn(
                 prompt,
                 model=self.config.codex_model,
                 effort=self.config.codex_reasoning_effort,
             )
         except CodexAppServerError as exc:
-            if not reconnect_on_timeout or "超时" not in str(exc):
+            if "超时" not in str(exc):
                 raise
-            message = "Codex 连接超时，正在自动重连（1/1）"
+            # turn/start may already have reached Codex even if its RPC reply is
+            # late. Keep the process and thread alive to avoid duplicate turns
+            # and avoid destroying interview context.
+            message = "Codex 请求确认较慢，保留原会话并继续等待"
             self.bus.publish({"type": "answer_retrying", "message": message})
             self.bus.publish({"type": "notice", "message": message})
-            self.codex.close()
-            self.codex.ensure_thread(model=self.config.codex_model, instructions=ANSWER_INSTRUCTIONS)
-            self.codex.start_turn(
-                prompt,
-                model=self.config.codex_model,
-                effort=self.config.codex_reasoning_effort,
-            )
 
     def _arm_answer_watchdog(self, generation: int) -> None:
         if self._answer_buffer or generation != self._answer_generation:
@@ -153,21 +161,15 @@ class InterviewEngine:
             self.bus.publish(
                 {
                     "type": "error",
-                    "message": "Codex 重连后仍未在限定时间内返回，可按 F8 再试一次",
+                    "message": "Codex 原会话仍未返回，可按 F8 在同一会话中重试",
                 }
             )
             return
         self._first_token_retry_used = True
-        message = "Codex 首字响应超时，正在自动重连（1/1）"
+        message = "Codex 响应较慢，继续等待原会话（不重连）"
         self.bus.publish({"type": "answer_retrying", "message": message})
         self.bus.publish({"type": "notice", "message": message})
-        try:
-            self.codex.close()
-            self._answer_buffer = ""
-            self._start_codex_turn(self._answer_prompt, reconnect_on_timeout=False)
-            self._arm_answer_watchdog(generation)
-        except Exception as exc:
-            self.bus.publish({"type": "error", "message": f"Codex 自动重连失败：{exc}"})
+        self._arm_answer_watchdog(generation)
 
     def _build_prompt(self, question, hits) -> str:
         assert self.session
@@ -176,7 +178,7 @@ class InterviewEngine:
         jd = (session_path / "jd.md").read_text(encoding="utf-8")
         evidence = "\n\n".join(
             f"[K{index}] 来源={hit.source} 标题={hit.title}\n{hit.content}"
-            for index, hit in enumerate(hits, start=1)
+            for index, hit in enumerate(hits[:4], start=1)
         ) or "未命中本地知识库，请依靠通用知识并标注为模型补充。"
         question_type = self.detector.classify(question)
         if self.config.include_core_points:
@@ -187,20 +189,21 @@ class InterviewEngine:
         else:
             output_format = """只输出一段30～45秒可直接口述的自然中文，控制在140～220个汉字。
 不要标题、不要核心要点列表、不要可能追问、不要展示来源标签。
-只有候选人事实允许使用“我做过/我负责”。开头直接回答问题。"""
+只有候选人事实允许使用“我做过/我负责”。
+第一句先用15～30个字直接给出结论，让用户能立刻开始口述；随后再自然补充原理、步骤或取舍。"""
         return f"""请回答本次面试问题。
 
 问题类型：{question_type}
 面试官问题：{question}
 
 本次JD：
-{jd[:6000]}
+{jd[:3000]}
 
 已确认的候选人事实：
 {facts[:6000]}
 
 本地检索依据：
-{evidence[:12000]}
+{evidence[:8000]}
 
 输出格式：
 {output_format}"""
