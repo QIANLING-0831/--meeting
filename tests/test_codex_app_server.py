@@ -17,6 +17,7 @@ def test_turn_can_override_model_and_effort():
     assert captured["method"] == "turn/start"
     assert captured["params"]["model"] == "gpt-5.6-luna"
     assert captured["params"]["effort"] == "low"
+    assert captured["timeout"] == 10
 
 
 def test_login_is_skipped_when_chatgpt_account_already_exists():

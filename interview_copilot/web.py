@@ -95,6 +95,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             "running": engine.active,
             "session": session_data,
             "answerSettings": {"includeCorePoints": config.include_core_points},
+            "answerSnapshot": engine.answer_snapshot(),
             "loopbackDevices": [item.__dict__ for item in list_loopback_devices()],
             "microphoneDevices": [item.__dict__ for item in list_input_devices()],
             "defaultMicrophoneDeviceId": default_input_device_id(),

@@ -100,7 +100,7 @@ class CodexAppServerClient:
         }
         if model:
             params["model"] = model
-        result = self.request("thread/start", params, timeout=30)
+        result = self.request("thread/start", params, timeout=10)
         self.thread_id = result["thread"]["id"]
         return self.thread_id
 
@@ -118,7 +118,7 @@ class CodexAppServerClient:
         result = self.request(
             "turn/start",
             params,
-            timeout=30,
+            timeout=10,
         )
         self.turn_id = result["turn"]["id"]
         return result

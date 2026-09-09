@@ -9,6 +9,7 @@ def test_home_and_status_routes(tmp_path):
         status = client.get("/api/status")
         assert status.status_code == 200
         assert "loopbackDevices" in status.json()
+        assert status.json()["answerSnapshot"] == {"question": "", "text": "", "running": False}
 
 
 def test_prepare_session_without_resume(tmp_path):

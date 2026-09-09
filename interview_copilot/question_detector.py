@@ -8,6 +8,7 @@ from .models import QuestionCandidate
 QUESTION_MARKERS = (
     "吗", "呢", "为什么", "怎么", "如何", "什么", "哪些", "多少", "是否",
     "能不能", "有没有", "请介绍", "介绍一下", "讲一下", "谈谈", "说说",
+    "说一下", "可以说一下", "能说一下", "可以讲一下",
     "区别", "原理", "流程", "设计", "实现", "解决", "遇到", "负责",
 )
 
@@ -17,7 +18,14 @@ class QuestionDetector:
 
     def detect(self, text: str) -> QuestionCandidate | None:
         normalized = re.sub(r"\s+", " ", text).strip()
+        if "大模型" in normalized:
+            normalized = re.sub(r"(?<![A-Za-z])L(?=[，,。.!！?？\s]|$)", "LLM", normalized)
         if len(normalized) < 2:
+            return None
+        incomplete_prompt = normalized.rstrip("，,。.!！?？；;：:").endswith(
+            ("说一下", "讲一下", "介绍一下", "谈一下")
+        )
+        if incomplete_prompt:
             return None
 
         marker_count = sum(marker in normalized for marker in QUESTION_MARKERS)

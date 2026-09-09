@@ -4,7 +4,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from .codex_app_server import CodexAppServerClient
+from .codex_app_server import CodexAppServerClient, CodexAppServerError
 from .config import AppConfig
 from .event_bus import EventBus
 from .knowledge import KnowledgeIndex
@@ -36,10 +36,21 @@ class InterviewEngine:
         self._question_timer: threading.Timer | None = None
         self._answer_buffer = ""
         self._current_question = ""
+        self._answer_prompt = ""
+        self._answer_generation = 0
+        self._answer_watchdog: threading.Timer | None = None
+        self._first_token_retry_used = False
 
     def set_session(self, session: InterviewSession) -> None:
         self.session = session
         self.question_assembler.reset()
+
+    def answer_snapshot(self) -> dict:
+        return {
+            "question": self._current_question,
+            "text": self._answer_buffer,
+            "running": bool(self.codex.turn_id),
+        }
 
     def ingest_transcript(self, speaker: Speaker, text: str, final: bool = True) -> None:
         entry = TranscriptEntry(speaker=speaker, text=text.strip(), final=final)
@@ -80,11 +91,23 @@ class InterviewEngine:
             except Exception:
                 pass
         self._current_question = question.strip()
+        self._answer_generation += 1
+        generation = self._answer_generation
+        self._cancel_answer_watchdog()
         hits = self.knowledge.search(self._current_question, self.session.knowledge_packs, limit=6)
         self.bus.publish({"type": "knowledge_hits", "question": self._current_question, "hits": [hit.to_dict() for hit in hits]})
         prompt = self._build_prompt(self._current_question, hits)
+        self._answer_prompt = prompt
         self._answer_buffer = ""
+        self._first_token_retry_used = False
         self.bus.publish({"type": "answer_started", "question": self._current_question})
+        try:
+            self._start_codex_turn(prompt, reconnect_on_timeout=True)
+            self._arm_answer_watchdog(generation)
+        except Exception as exc:
+            self.bus.publish({"type": "error", "message": f"Codex 调用失败：{exc}"})
+
+    def _start_codex_turn(self, prompt: str, *, reconnect_on_timeout: bool) -> None:
         try:
             self.codex.ensure_thread(model=self.config.codex_model, instructions=ANSWER_INSTRUCTIONS)
             self.codex.start_turn(
@@ -92,8 +115,59 @@ class InterviewEngine:
                 model=self.config.codex_model,
                 effort=self.config.codex_reasoning_effort,
             )
+        except CodexAppServerError as exc:
+            if not reconnect_on_timeout or "超时" not in str(exc):
+                raise
+            message = "Codex 连接超时，正在自动重连（1/1）"
+            self.bus.publish({"type": "answer_retrying", "message": message})
+            self.bus.publish({"type": "notice", "message": message})
+            self.codex.close()
+            self.codex.ensure_thread(model=self.config.codex_model, instructions=ANSWER_INSTRUCTIONS)
+            self.codex.start_turn(
+                prompt,
+                model=self.config.codex_model,
+                effort=self.config.codex_reasoning_effort,
+            )
+
+    def _arm_answer_watchdog(self, generation: int) -> None:
+        if self._answer_buffer or generation != self._answer_generation:
+            return
+        self._cancel_answer_watchdog()
+        self._answer_watchdog = threading.Timer(
+            self.config.answer_timeout_seconds,
+            self._handle_first_token_timeout,
+            args=(generation,),
+        )
+        self._answer_watchdog.daemon = True
+        self._answer_watchdog.start()
+
+    def _cancel_answer_watchdog(self) -> None:
+        if self._answer_watchdog:
+            self._answer_watchdog.cancel()
+            self._answer_watchdog = None
+
+    def _handle_first_token_timeout(self, generation: int) -> None:
+        if generation != self._answer_generation or self._answer_buffer:
+            return
+        if self._first_token_retry_used:
+            self.bus.publish(
+                {
+                    "type": "error",
+                    "message": "Codex 重连后仍未在限定时间内返回，可按 F8 再试一次",
+                }
+            )
+            return
+        self._first_token_retry_used = True
+        message = "Codex 首字响应超时，正在自动重连（1/1）"
+        self.bus.publish({"type": "answer_retrying", "message": message})
+        self.bus.publish({"type": "notice", "message": message})
+        try:
+            self.codex.close()
+            self._answer_buffer = ""
+            self._start_codex_turn(self._answer_prompt, reconnect_on_timeout=False)
+            self._arm_answer_watchdog(generation)
         except Exception as exc:
-            self.bus.publish({"type": "error", "message": f"Codex 调用失败：{exc}"})
+            self.bus.publish({"type": "error", "message": f"Codex 自动重连失败：{exc}"})
 
     def _build_prompt(self, question, hits) -> str:
         assert self.session
@@ -136,9 +210,12 @@ class InterviewEngine:
         params = event.get("params") or {}
         if method == "item/agentMessage/delta":
             delta = params.get("delta", "")
+            if not self._answer_buffer:
+                self._cancel_answer_watchdog()
             self._answer_buffer += delta
             self.bus.publish({"type": "answer_delta", "delta": delta})
         elif method == "turn/completed":
+            self._cancel_answer_watchdog()
             status = (params.get("turn") or {}).get("status", "completed")
             if self.session and self._answer_buffer.strip():
                 stamp = datetime.now().isoformat(timespec="seconds")

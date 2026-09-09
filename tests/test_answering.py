@@ -1,4 +1,5 @@
 from interview_copilot.answering import InterviewEngine
+from interview_copilot.codex_app_server import CodexAppServerError
 from interview_copilot.config import AppConfig
 from interview_copilot.event_bus import EventBus
 
@@ -100,3 +101,77 @@ def test_auto_answer_schedules_only_the_assembled_question(tmp_path, monkeypatch
     engine.ingest_transcript("interviewer", "哪些？", final=True)
 
     assert scheduled == ["你说一下C++的特性有哪些？"]
+
+
+def test_answer_reconnects_once_when_codex_start_times_out(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    events = engine.bus.subscribe()
+    attempts = []
+    closes = []
+
+    def ensure_thread(**_kwargs):
+        attempts.append("ensure")
+        if len(attempts) == 1:
+            raise CodexAppServerError("Codex 请求超时：initialize")
+        return "thread-2"
+
+    monkeypatch.setattr(engine.codex, "ensure_thread", ensure_thread)
+    monkeypatch.setattr(engine.codex, "close", lambda: closes.append("close"))
+    monkeypatch.setattr(engine.codex, "start_turn", lambda *_args, **_kwargs: {"turn": {"id": "turn-2"}})
+
+    engine.answer("什么是 LLM？")
+    engine._cancel_answer_watchdog()
+
+    assert attempts == ["ensure", "ensure"]
+    assert closes == ["close"]
+    notices = []
+    while not events.empty():
+        event = events.get_nowait()
+        if event["type"] == "notice":
+            notices.append(event["message"])
+    assert notices == ["Codex 连接超时，正在自动重连（1/1）"]
+
+
+def test_first_token_timeout_restarts_turn_once(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    events = engine.bus.subscribe()
+    engine._answer_generation = 7
+    engine._answer_prompt = "回答这个问题"
+    engine._answer_buffer = ""
+    closes = []
+    starts = []
+    monkeypatch.setattr(engine.codex, "close", lambda: closes.append("close"))
+    monkeypatch.setattr(
+        engine,
+        "_start_codex_turn",
+        lambda prompt, **_kwargs: starts.append(prompt),
+    )
+    monkeypatch.setattr(engine, "_arm_answer_watchdog", lambda generation: starts.append(generation))
+
+    engine._handle_first_token_timeout(7)
+
+    assert closes == ["close"]
+    assert starts == ["回答这个问题", 7]
+    assert engine._first_token_retry_used is True
+    retry_events = []
+    while not events.empty():
+        event = events.get_nowait()
+        if event["type"] == "answer_retrying":
+            retry_events.append(event["message"])
+    assert retry_events == ["Codex 首字响应超时，正在自动重连（1/1）"]
+
+
+def test_second_first_token_timeout_stops_retrying(tmp_path):
+    engine = build_engine(tmp_path, False)
+    events = engine.bus.subscribe()
+    engine._answer_generation = 3
+    engine._first_token_retry_used = True
+
+    engine._handle_first_token_timeout(3)
+
+    errors = []
+    while not events.empty():
+        event = events.get_nowait()
+        if event["type"] == "error":
+            errors.append(event["message"])
+    assert errors == ["Codex 重连后仍未在限定时间内返回，可按 F8 再试一次"]
