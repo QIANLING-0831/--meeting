@@ -11,6 +11,11 @@
 .setup.collapsed #setupToggle { writing-mode: vertical-rl; padding: 9px 6px; }
 main.setup-collapsed { grid-template-columns: 72px minmax(420px, 1.05fr) minmax(520px, 1.45fr); }
 .utterance.provisional { opacity: .68; border-style: dashed; }
+.utterance.selectable { cursor: pointer; }
+.utterance.selectable:hover { background: #203029; }
+.utterance.selected { outline: 2px solid var(--amber); background: #292619; }
+.transcript-selection { display: flex; align-items: center; gap: 7px; margin: -8px 0 10px; }
+.transcript-selection .hint { margin: 0 auto 0 0; }
 .answer .knowledge-hits {
   display: grid;
   grid-template-columns: 1fr;
@@ -20,7 +25,7 @@ main.setup-collapsed { grid-template-columns: 72px minmax(420px, 1.05fr) minmax(
 }
 .answer .hit {
   min-width: 0;
-  white-space: pre-line;
+  white-space: normal;
   line-height: 1.45;
   max-height: 210px;
   overflow: auto;
@@ -28,6 +33,7 @@ main.setup-collapsed { grid-template-columns: 72px minmax(420px, 1.05fr) minmax(
   font-size: 13px;
 }
 .answer .hit b { color: var(--green); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.answer .hit-question { color: var(--text); font-weight: 600; margin: 4px 0 7px; line-height: 1.35; }
 .model-controls { display: grid; grid-template-columns: minmax(150px, 1fr) 115px; gap: 8px; align-items: end; margin-bottom: 12px; }
 .model-controls label { margin: 0; }
 .model-controls select { margin-top: 4px; padding: 8px; }

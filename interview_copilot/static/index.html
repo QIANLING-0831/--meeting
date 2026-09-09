@@ -40,8 +40,13 @@
         <label id="candidateLevelWrap" class="hidden">麦克风 <meter id="candidateLevel" min="0" max="1" value="0"></meter><span id="candidateLevelText">未检测</span></label>
       </div>
       <div id="transcript" class="transcript"><div class="empty">系统声音会标为“面试官”，麦克风会标为“我”。</div></div>
+      <div class="transcript-selection">
+        <span id="selectionHint" class="hint">可点击面试官转写，手动选择问题片段</span>
+        <button id="setQuestionButton" class="secondary compact" disabled>设为当前问题</button>
+        <button id="clearSelectionButton" class="ghost compact" disabled>清除选择</button>
+      </div>
       <div class="manual-box"><select id="manualSpeaker"><option value="interviewer">面试官</option><option value="candidate">我</option></select><input id="manualText" placeholder="可输入一句话测试，无需开启音频"><button id="sendTextButton" class="secondary">加入记录</button></div>
-      <p class="hint">F8：回答最后一个问题　Esc：打断当前生成</p>
+      <p class="hint">F8：回答当前问题（手动选择优先）　Esc：打断当前生成</p>
     </section>
 
     <section class="answer card">
