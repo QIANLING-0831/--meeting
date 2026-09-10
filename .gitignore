@@ -7,3 +7,5 @@ config.json
 workspace/sessions/
 workspace/knowledge/indexes/
 workspace/knowledge/sources/
+workspace/knowledge/packs/*
+!workspace/knowledge/packs/README.md
