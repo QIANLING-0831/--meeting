@@ -205,6 +205,32 @@ def test_unknown_turn_after_start_timeout_is_not_sent_twice(tmp_path, monkeypatc
     assert starts == []
 
 
+def test_failed_interrupt_rotates_thread_without_restarting_codex_process(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    engine._answer_generation = 4
+    engine._answer_buffer = ""
+    engine._answer_prompt = "回答"
+    engine.codex.turn_id = "turn-stuck"
+    actions = []
+    monkeypatch.setattr(
+        engine.codex,
+        "interrupt",
+        lambda: (_ for _ in ()).throw(CodexAppServerError("Codex 中断确认超时")),
+    )
+    monkeypatch.setattr(engine.codex, "reset_thread", lambda: actions.append("reset-thread"))
+    monkeypatch.setattr(engine.codex, "close", lambda: actions.append("close-process"))
+    monkeypatch.setattr(
+        engine,
+        "_start_codex_turn",
+        lambda prompt, **_kwargs: actions.append(("start", prompt)),
+    )
+    monkeypatch.setattr(engine, "_arm_answer_watchdog", lambda generation: actions.append(("watchdog", generation)))
+
+    engine._handle_first_token_timeout(4)
+
+    assert actions == ["reset-thread", ("start", "回答"), ("watchdog", 4)]
+
+
 def test_second_first_token_timeout_stops_retrying(tmp_path):
     engine = build_engine(tmp_path, False)
     events = engine.bus.subscribe()

@@ -1,4 +1,6 @@
 from pathlib import Path
+import threading
+import time
 
 from interview_copilot.codex_app_server import CodexAppServerClient
 
@@ -29,3 +31,21 @@ def test_login_is_skipped_when_chatgpt_account_already_exists():
     result = client.begin_chatgpt_login()
     assert result["type"] == "alreadyLoggedIn"
     assert result["account"]["planType"] == "plus"
+
+
+def test_interrupt_waits_until_turn_completed_before_returning():
+    client = CodexAppServerClient(Path("."))
+    client.thread_id = "thread-1"
+    client.turn_id = "turn-1"
+    client._turn_finished.clear()
+
+    def fake_request(*_args, **_kwargs):
+        threading.Timer(0.05, client._turn_finished.set).start()
+        return {}
+
+    client.request = fake_request
+    started = time.perf_counter()
+
+    client.interrupt()
+
+    assert time.perf_counter() - started >= 0.04

@@ -25,6 +25,8 @@ class CodexAppServerClient:
         self._write_lock = threading.Lock()
         self._thread_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
+        self._turn_finished = threading.Event()
+        self._turn_finished.set()
         self.thread_id: str | None = None
         self.turn_id: str | None = None
 
@@ -117,21 +119,33 @@ class CodexAppServerClient:
             params["model"] = model
         if effort:
             params["effort"] = effort
-        result = self.request(
-            "turn/start",
-            params,
-            timeout=10,
-        )
+        self._turn_finished.clear()
+        result = self.request("turn/start", params, timeout=10)
         self.turn_id = result["turn"]["id"]
         return result
 
-    def interrupt(self) -> None:
+    def interrupt(self, completion_timeout: float = 1.5) -> None:
         if self.thread_id and self.turn_id:
+            interrupted_turn_id = self.turn_id
             self.request(
                 "turn/interrupt",
-                {"threadId": self.thread_id, "turnId": self.turn_id},
+                {"threadId": self.thread_id, "turnId": interrupted_turn_id},
                 timeout=10,
             )
+            # The RPC response only acknowledges the cancellation request.  A
+            # new turn must not start until the old one has actually emitted
+            # turn/completed, otherwise Codex can leave the retry queued behind
+            # a still-running turn.
+            if not self._turn_finished.wait(timeout=completion_timeout):
+                raise CodexAppServerError("Codex 中断确认超时：旧回答尚未结束")
+            if self.turn_id == interrupted_turn_id:
+                self.turn_id = None
+
+    def reset_thread(self) -> None:
+        """Abandon a stuck conversation without restarting the signed-in server."""
+        self.thread_id = None
+        self.turn_id = None
+        self._turn_finished.set()
 
     def request(self, method: str, params: dict | None, timeout: float = 20) -> dict:
         request_id = self._next_id
@@ -156,6 +170,7 @@ class CodexAppServerClient:
         self.process = None
         self.thread_id = None
         self.turn_id = None
+        self._turn_finished.set()
         if process and process.poll() is None:
             process.terminate()
             try:
@@ -182,7 +197,10 @@ class CodexAppServerClient:
             if request_id is not None and request_id in self._pending:
                 self._pending.pop(request_id).put(message)
             elif "method" in message:
+                if message.get("method") == "turn/completed":
+                    self._turn_finished.set()
                 self.on_event(message)
+        self._turn_finished.set()
         if self.process and self.process.poll() not in (None, 0):
             error = "Codex App Server 意外退出"
             if self.process.stderr:

@@ -87,10 +87,12 @@ class InterviewEngine:
             self.bus.publish({"type": "error", "message": "请先准备本次面试会话"})
             return
         if self.codex.turn_id:
+            old_turn_id = self.codex.turn_id
+            self._obsolete_turn_ids.add(old_turn_id)
             try:
                 self.codex.interrupt()
             except Exception:
-                pass
+                self.codex.reset_thread()
         self._current_question = question.strip()
         self._answer_generation += 1
         generation = self._answer_generation
@@ -181,12 +183,20 @@ class InterviewEngine:
             self._obsolete_turn_ids.add(old_turn_id)
         try:
             self.codex.interrupt()
-            self.codex.turn_id = None
+        except Exception as exc:
+            # A stuck turn makes its conversation unsafe for another turn. Keep
+            # the authenticated app-server process alive, but move the retry to
+            # a fresh Codex thread so it cannot queue behind the old response.
+            message = f"旧回答无法结束，已切换备用会话（Codex 保持登录）：{exc}"
+            self.bus.publish({"type": "answer_retrying", "message": message})
+            self.bus.publish({"type": "notice", "message": message})
+            self.codex.reset_thread()
+        try:
             self._answer_buffer = ""
             self._start_codex_turn(self._answer_prompt, reconnect_on_timeout=False)
             self._arm_answer_watchdog(generation)
         except Exception as exc:
-            self._publish_error(f"Codex 同会话重试失败：{exc}")
+            self._publish_error(f"Codex 自动重试失败：{exc}")
 
     def _publish_error(self, message: str) -> None:
         self.bus.publish({"type": "error", "message": message})
