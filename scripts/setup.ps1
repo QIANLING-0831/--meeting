@@ -1,4 +1,4 @@
-param([switch]$CheckOnly)
+﻿param([switch]$CheckOnly)
 
 $ErrorActionPreference = "Stop"
 
@@ -6,19 +6,19 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
 function Resolve-PythonLauncher {
-    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyLauncher) {
-        & $pyLauncher.Source -3.11 -c "import sys; assert sys.version_info >= (3, 11)" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            return @{ File = $pyLauncher.Source; Prefix = @("-3.11") }
-        }
-    }
-
     $python = Get-Command python -ErrorAction SilentlyContinue
     if ($python) {
         & $python.Source -c "import sys; assert sys.version_info >= (3, 11)" 2>$null
         if ($LASTEXITCODE -eq 0) {
             return @{ File = $python.Source; Prefix = @() }
+        }
+    }
+
+    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyLauncher) {
+        & $pyLauncher.Source -3.11 -c "import sys; assert sys.version_info >= (3, 11)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return @{ File = $pyLauncher.Source; Prefix = @("-3.11") }
         }
     }
 

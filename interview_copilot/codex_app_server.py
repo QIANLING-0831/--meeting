@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -11,6 +12,36 @@ from typing import Callable
 
 class CodexAppServerError(RuntimeError):
     pass
+
+
+def resolve_codex_executable() -> str:
+    """Locate Codex even when an Explorer-launched process has a stale PATH."""
+    override = os.environ.get("INTERVIEW_COPILOT_CODEX", "").strip()
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.is_file():
+            return str(override_path)
+        raise CodexAppServerError(f"INTERVIEW_COPILOT_CODEX 指向的文件不存在：{override_path}")
+
+    path_match = shutil.which("codex")
+    if path_match:
+        return path_match
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        desktop_bin = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+        candidates = sorted(
+            desktop_bin.glob("*/codex.exe"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            return str(candidates[0])
+
+    raise CodexAppServerError(
+        "找不到 Codex CLI。请先安装并运行 codex 完成登录；"
+        "如已安装，可设置 INTERVIEW_COPILOT_CODEX 为 codex.exe 的完整路径。"
+    )
 
 
 class CodexAppServerClient:
@@ -38,8 +69,9 @@ class CodexAppServerClient:
         if self.running:
             return
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        codex_executable = resolve_codex_executable()
         self.process = subprocess.Popen(
-            ["codex", "app-server", "--stdio"],
+            [codex_executable, "app-server", "--stdio"],
             cwd=self.cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
