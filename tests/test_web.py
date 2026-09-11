@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
+from types import SimpleNamespace
 
 from interview_copilot.web import create_app
+from interview_copilot.config import AppConfig
 
 
 def test_home_and_status_routes(tmp_path):
@@ -9,6 +11,8 @@ def test_home_and_status_routes(tmp_path):
         status = client.get("/api/status")
         assert status.status_code == 200
         assert "loopbackDevices" in status.json()
+        assert "selectedLoopbackDeviceName" in status.json()
+        assert 'id="loopbackDevice"' in client.get("/").text
         assert status.json()["answerSnapshot"] == {"question": "", "text": "", "running": False}
 
 
@@ -80,3 +84,41 @@ def test_paraformer_key_cannot_change_while_recognition_is_running(tmp_path):
         )
 
     assert response.status_code == 409
+
+
+def test_start_interview_uses_and_saves_selected_loopback_device(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-12345678")
+    monkeypatch.setattr(
+        "interview_copilot.web.list_loopback_devices",
+        lambda: [SimpleNamespace(name="扬声器 (VENTURE-DAS-32)", id="device-1")],
+    )
+    app = create_app(tmp_path)
+    app.state.engine.session, _ = app.state.engine.sessions.create(
+        company="测试公司",
+        position="Agent",
+        jd_text="",
+        resume_path=None,
+        knowledge_packs=[],
+    )
+    calls = []
+    monkeypatch.setattr(
+        app.state.audio,
+        "start",
+        lambda microphone_enabled, microphone_device_id, loopback_device_name: calls.append(
+            (microphone_enabled, microphone_device_id, loopback_device_name)
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/interview/start",
+            json={
+                "microphone_enabled": False,
+                "microphone_device_id": "",
+                "loopback_device_name": "扬声器 (VENTURE-DAS-32)",
+            },
+        )
+
+    assert response.status_code == 200
+    assert calls == [(False, "", "扬声器 (VENTURE-DAS-32)")]
+    assert AppConfig.load(tmp_path).device_name == "扬声器 (VENTURE-DAS-32)"

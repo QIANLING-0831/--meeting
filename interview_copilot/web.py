@@ -31,6 +31,7 @@ class FactsPayload(BaseModel):
 class StartPayload(BaseModel):
     microphone_enabled: bool = False
     microphone_device_id: str = ""
+    loopback_device_name: str = ""
 
 
 class TranscriptPayload(BaseModel):
@@ -80,6 +81,14 @@ def create_app(root: Path | None = None) -> FastAPI:
         lambda speaker, level: bus.publish(
             {"type": "audio_level", "speaker": speaker, "level": level}
         ),
+        lambda speaker, status, message: bus.publish(
+            {
+                "type": "audio_status",
+                "speaker": speaker,
+                "status": status,
+                "message": message,
+            }
+        ),
     )
 
     @asynccontextmanager
@@ -112,6 +121,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             "answerSettings": {"includeCorePoints": config.include_core_points},
             "answerSnapshot": engine.answer_snapshot(),
             "loopbackDevices": [item.__dict__ for item in list_loopback_devices()],
+            "selectedLoopbackDeviceName": config.device_name,
             "microphoneDevices": [item.__dict__ for item in list_input_devices()],
             "defaultMicrophoneDeviceId": default_input_device_id(),
             "selectedMicrophoneDeviceId": config.microphone_name,
@@ -178,10 +188,21 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(400, "请先准备本次面试")
         if not os.getenv("DASHSCOPE_API_KEY"):
             raise HTTPException(400, "未检测到 DASHSCOPE_API_KEY")
+        loopback_devices = list_loopback_devices()
+        selected_loopback = payload.loopback_device_name.strip() or config.device_name
+        if selected_loopback and selected_loopback not in {item.name for item in loopback_devices}:
+            raise HTTPException(400, "选择的系统声音设备已不存在，请重新选择")
         try:
-            audio.start(payload.microphone_enabled, payload.microphone_device_id)
+            audio.start(
+                payload.microphone_enabled,
+                payload.microphone_device_id,
+                selected_loopback,
+            )
+            if selected_loopback:
+                config.device_name = selected_loopback
             if payload.microphone_enabled and payload.microphone_device_id:
                 config.microphone_name = payload.microphone_device_id
+            if selected_loopback or (payload.microphone_enabled and payload.microphone_device_id):
                 config.save(app_root)
         except Exception as exc:
             raise HTTPException(500, f"音频启动失败：{exc}") from exc

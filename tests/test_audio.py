@@ -58,9 +58,31 @@ def test_low_loopback_speech_is_boosted_without_amplifying_silence():
     assert np.array_equal(audio.prepare_loopback_audio(normal), normal)
 
 
+def test_stateful_loopback_processor_stabilizes_alternating_weak_speech():
+    processor = audio.LoopbackAudioProcessor()
+    phase = np.linspace(0, 20 * np.pi, 4_800, endpoint=False)
+    blocks = [
+        (np.sin(phase) * amplitude).astype(np.float32)
+        for amplitude in (0.002, 0.03, 0.002, 0.03, 0.002)
+    ]
+
+    levels = [
+        float(np.sqrt(np.mean(np.square(processor.process(block)))))
+        for block in blocks
+    ]
+
+    assert min(levels) > 0.01
+    assert max(levels) / min(levels) < 2.5
+    assert np.array_equal(
+        processor.process(np.zeros(4_800, dtype=np.float32)),
+        np.zeros(4_800, dtype=np.float32),
+    )
+
+
 def test_loopback_reopens_after_windows_invalidates_the_audio_device(monkeypatch):
     stop = Event()
     received = []
+    statuses = []
     attempts = 0
 
     class FakeRecorder:
@@ -103,8 +125,11 @@ def test_loopback_reopens_after_windows_invalidates_the_audio_device(monkeypatch
         0.1,
         on_block,
         retry_delay_seconds=0,
+        on_status=lambda status, message: statuses.append((status, message)),
     )
 
     assert attempts == 2
     assert received[0][0].shape == (1_600,)
     assert received[0][1] == 16_000
+    assert "reconnecting" in [status for status, _message in statuses]
+    assert statuses[-1][0] == "connected"

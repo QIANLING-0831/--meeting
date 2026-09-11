@@ -16,6 +16,49 @@ class AudioDevice:
     id: str
 
 
+class LoopbackAudioProcessor:
+    """Stateful speech gain control for short WASAPI loopback blocks."""
+
+    def __init__(
+        self,
+        *,
+        silence_rms: float = 0.0003,
+        target_rms: float = 0.04,
+        max_gain: float = 20.0,
+        gain_release: float = 0.7,
+        peak_limit: float = 0.95,
+    ) -> None:
+        self.silence_rms = silence_rms
+        self.target_rms = target_rms
+        self.max_gain = max_gain
+        self.gain_release = gain_release
+        self.peak_limit = peak_limit
+        self.gain: float | None = None
+
+    def process(self, audio: np.ndarray) -> np.ndarray:
+        samples = np.asarray(audio, dtype=np.float32)
+        if samples.size == 0:
+            return samples
+        centered = samples - float(np.mean(samples))
+        rms = float(np.sqrt(np.mean(np.square(centered))))
+        if rms < self.silence_rms:
+            return np.zeros_like(samples)
+
+        desired_gain = min(self.max_gain, max(0.5, self.target_rms / rms))
+        if self.gain is None or desired_gain <= self.gain:
+            # Reduce gain immediately when speech becomes louder to avoid clipping.
+            self.gain = desired_gain
+        else:
+            # Raise gain progressively so pauses and background noise do not pump.
+            self.gain += self.gain_release * (desired_gain - self.gain)
+
+        processed = centered * self.gain
+        peak = float(np.max(np.abs(processed)))
+        if peak > self.peak_limit:
+            processed *= self.peak_limit / peak
+        return processed.astype(np.float32, copy=False)
+
+
 def prepare_loopback_audio(
     audio: np.ndarray,
     *,
@@ -82,6 +125,7 @@ def capture_loopback(
     block_seconds: float,
     on_block: Callable[[np.ndarray, int], None],
     retry_delay_seconds: float = 0.1,
+    on_status: Callable[[str, str], None] | None = None,
 ) -> None:
     frames = max(1, int(sample_rate * block_seconds))
     consecutive_failures = 0
@@ -99,13 +143,17 @@ def capture_loopback(
                 # existing WASAPI handles when a meeting app or output route resets.
                 device = _find_device(device_name)
                 with device.recorder(samplerate=sample_rate, channels=1) as recorder:
+                    if on_status:
+                        on_status("connected", getattr(device, "name", device_name))
                     while not stop.is_set():
                         block = recorder.record(numframes=frames)
                         consecutive_failures = 0
                         on_block(np.asarray(block[:, 0], dtype=np.float32), sample_rate)
-            except Exception:
+            except Exception as exc:
                 if stop.is_set():
                     return
+                if on_status:
+                    on_status("reconnecting", str(exc))
                 # Event.wait makes shutdown immediate while preventing a tight
                 # reconnect loop if Windows or Paraformer is temporarily offline.
                 # The first recovery is nearly immediate; a sustained outage
