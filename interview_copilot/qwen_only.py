@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from .event_bus import EventBus
@@ -31,7 +32,11 @@ class QwenOnlyEngine:
         self._answer_running = False
         self._answer_touched = False
         self._last_transcript_item = ""
-        self._recent_questions: deque[str] = deque(maxlen=2)
+        # Keep the active follow-up chain instead of mechanically retaining two
+        # questions.  A clear topic-switch phrase starts a new chain; the cap is
+        # only a safety bound for prompt size during a long interview.
+        self._topic_questions: deque[str] = deque(maxlen=10)
+        self._candidate_answers: deque[str] = deque(maxlen=8)
         self.text_answerer = QwenTextAnswerer(
             self.on_qwen_event, answer_model, workspace_id=workspace_id
         )
@@ -46,7 +51,8 @@ class QwenOnlyEngine:
                 "text": self._answer,
                 "responseId": self._response_id,
                 "running": self._answer_running,
-                "recentQuestions": list(self._recent_questions),
+                "recentQuestions": list(self._topic_questions),
+                "candidateAnswers": list(self._candidate_answers),
             }
 
     def instructions(self) -> str:
@@ -55,6 +61,7 @@ class QwenOnlyEngine:
         jd = (self.session.path / "jd.md").read_text(encoding="utf-8").strip()
         facts = (self.session.path / "candidate-facts.md").read_text(encoding="utf-8").strip()
         external = self.sessions.external_knowledge(self.session.id)
+        topic_context = self._topic_context()
         return f"""你是候选人的实时面试回答助手。请根据面试官的问题，用中文输出候选人可以马上口述的回答。
 
 规则：
@@ -63,8 +70,9 @@ class QwenOnlyEngine:
 3. 只能把“候选人事实”中的内容说成亲身经历；资料没有写明的经历、数字和成果不得编造。
 4. 技术题可以结合通用知识回答，但要清楚区分通用方案与候选人的真实经历。
 5. 听到停顿、语气词或不完整句时继续等待；不要抢答。
-6. 只保留最近两道完整技术问题作为上下文。当前话轮若只是“嗯、啊、好的”等语气词、残句或无关对话，输出空字符串，不覆盖上一道问题。
-7. 当前话轮若是追问、指代或被打断后的补充，结合最近两道技术问题还原真实意图后继续回答；只有明确的新问题才切换主题。
+6. 当前话轮若只是“嗯、啊、好的”等语气词、残句或无关对话，输出空字符串，不覆盖上一道问题。
+7. 当前话轮若是追问、指代或被打断后的补充，结合“当前追问链”和候选人刚才的回答还原真实意图；只有面试官明确切换话题时才切换主题。
+8. 候选人回答仅用于判断面试官后续追问所指内容、避免前后矛盾，不得把候选人的话当成面试官的新问题，也不要擅自虚构补充。
 
 岗位信息：
 公司：{self.session.company}
@@ -78,7 +86,23 @@ class QwenOnlyEngine:
 
 外部题库与项目参考（只用于预测问题和补充通用技术知识，不得当作候选人亲历）：
 {external}
+
+当前面试上下文：
+{topic_context}
 """.strip()
+
+    def _topic_context(self) -> str:
+        with self._lock:
+            questions = list(self._topic_questions)
+            answers = list(self._candidate_answers)
+        if not questions and not answers:
+            return "尚无已确认的技术主题。"
+        lines = ["面试官当前追问链："]
+        lines.extend(f"- {item}" for item in questions)
+        if answers:
+            lines.append("候选人最近回答：")
+            lines.extend(f"- {item}" for item in answers)
+        return "\n".join(lines)
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
@@ -88,9 +112,15 @@ class QwenOnlyEngine:
         return any(marker in text for marker in markers)
 
     def _remember_question(self, text: str) -> None:
-        if self._looks_like_question(text) and (not self._recent_questions or self._recent_questions[-1] != text):
-            self._recent_questions.append(text)
-            self.bus.publish({"type": "question_memory", "questions": list(self._recent_questions)})
+        if not self._looks_like_question(text):
+            return
+        topic_switches = ("下一个问题", "换个话题", "换一个话题", "另外一个问题", "接下来问")
+        if any(marker in text for marker in topic_switches):
+            self._topic_questions.clear()
+            self._candidate_answers.clear()
+        if not self._topic_questions or self._topic_questions[-1] != text:
+            self._topic_questions.append(text)
+            self.bus.publish({"type": "question_memory", "questions": list(self._topic_questions)})
 
     def asr_context(self) -> str:
         if not self.session:
@@ -111,12 +141,42 @@ class QwenOnlyEngine:
         )
         return extract_hotwords(source)
 
-    def on_asr_text(self, _speaker: str, text: str, final: bool) -> None:
+    def on_asr_text(self, speaker: str, text: str, final: bool) -> None:
         clean = text.strip()
         if not clean:
             return
         if not final:
-            self.bus.publish({"type": "qwen_transcript_delta", "text": clean})
+            self.bus.publish({"type": "qwen_transcript_delta", "speaker": speaker, "text": clean})
+            return
+        if speaker == "candidate":
+            # Laptop speakers can leak the interviewer's voice back into the
+            # microphone. Do not mistake a near-duplicate question for the
+            # candidate's answer context.
+            with self._lock:
+                current_question = self._question
+            comparable = lambda value: "".join(value.lower().split()).strip("，。！？?")
+            if current_question and SequenceMatcher(
+                None, comparable(clean), comparable(current_question)
+            ).ratio() >= 0.82:
+                self.bus.publish({"type": "candidate_echo_ignored", "text": clean})
+                return
+            entry = TranscriptEntry(speaker="candidate", text=clean, final=True)
+            with self._lock:
+                if not self._candidate_answers or self._candidate_answers[-1] != clean:
+                    self._candidate_answers.append(clean)
+            if self.session:
+                self.sessions.append_text(
+                    self.session.id,
+                    "candidate-transcript.md",
+                    f"- [{entry.created_at}] {clean}",
+                )
+            self.bus.publish({"type": "transcript", "entry": entry.to_dict()})
+            self.bus.publish(
+                {
+                    "type": "candidate_context_updated",
+                    "answers": list(self._candidate_answers),
+                }
+            )
             return
         entry = TranscriptEntry(speaker="interviewer", text=clean, final=True)
         with self._lock:

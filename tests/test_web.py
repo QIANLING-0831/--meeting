@@ -16,11 +16,13 @@ def test_home_and_status_are_qwen_only(tmp_path, monkeypatch):
         status = client.get("/api/status").json()
 
     assert 'id="loopbackDevice"' in page
+    assert 'id="microphoneEnabled"' in page
     assert "Qwen Audio Realtime Plus" in page
     assert "Codex" not in page
     assert "Paraformer" not in page
     assert status["aliyunConfigured"] is False
     assert "loopbackDevices" in status
+    assert "microphoneDevices" in status
     assert status["answerSnapshot"]["text"] == ""
     assert home.headers["cache-control"] == "no-store"
 
@@ -110,6 +112,10 @@ def test_start_interview_uses_selected_loopback_and_qwen_prompt(tmp_path, monkey
         "interview_copilot.web.probe_loopback_levels",
         lambda **_options: [{"name": "扬声器", "id": "device-1", "rms": 0.02}],
     )
+    monkeypatch.setattr(
+        "interview_copilot.web.list_input_devices",
+        lambda: [SimpleNamespace(name="麦克风", id="7")],
+    )
     app = create_app(tmp_path)
     app.state.engine.session, _ = app.state.engine.sessions.create(
         company="测试公司", position="Agent", jd_text="JD", resume_path=None, knowledge_packs=[]
@@ -118,12 +124,15 @@ def test_start_interview_uses_selected_loopback_and_qwen_prompt(tmp_path, monkey
     monkeypatch.setattr(app.state.audio, "start", lambda **options: calls.append(options))
 
     with TestClient(app) as client:
-        response = client.post("/api/interview/start", json={"loopback_device_name": "扬声器"})
+        response = client.post("/api/interview/start", json={"loopback_device_name": "扬声器", "microphone_enabled": True, "microphone_device_id": "7"})
 
     assert response.status_code == 200
     assert calls[0]["loopback_device_name"] == "扬声器"
+    assert calls[0]["microphone_enabled"] is True
+    assert calls[0]["microphone_device_id"] == "7"
     assert "测试公司" in calls[0]["fast_instructions"]
     assert AppConfig.load(tmp_path).device_name == "扬声器"
+    assert AppConfig.load(tmp_path).microphone_enabled is True
 
 
 def test_start_auto_selects_the_device_that_has_meeting_audio(tmp_path, monkeypatch):

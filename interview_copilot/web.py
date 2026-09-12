@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .audio import list_loopback_devices, probe_loopback_levels
+from .audio import default_input_device_id, list_input_devices, list_loopback_devices, probe_loopback_levels
 from .config import AppConfig
 from .event_bus import EventBus
 from .external_sources import import_github_source
@@ -35,6 +35,8 @@ class ExternalSourcePayload(BaseModel):
 
 class StartPayload(BaseModel):
     loopback_device_name: str = ""
+    microphone_enabled: bool = False
+    microphone_device_id: str = ""
 
 
 class RealtimeSettingsPayload(BaseModel):
@@ -122,6 +124,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             {"type": "audio_status", "speaker": speaker, "status": status, "message": message}
         ),
         on_fast_event=engine.on_qwen_event,
+        instructions_provider=engine.instructions,
     )
     browser_connections = _BrowserConnectionTracker(
         engine, audio, bus, config.browser_disconnect_grace_seconds
@@ -177,6 +180,9 @@ def create_app(root: Path | None = None) -> FastAPI:
             },
             "loopbackDevices": [item.__dict__ for item in list_loopback_devices()],
             "selectedLoopbackDeviceName": config.device_name,
+            "microphoneDevices": [item.__dict__ for item in list_input_devices()],
+            "selectedMicrophoneDeviceId": config.microphone_name or default_input_device_id(),
+            "microphoneEnabled": config.microphone_enabled,
         }
 
     @app.post("/api/session/prepare")
@@ -243,7 +249,13 @@ def create_app(root: Path | None = None) -> FastAPI:
                     }
                 )
         try:
+            microphone_ids = {item.id for item in list_input_devices()}
+            microphone_id = payload.microphone_device_id.strip() or config.microphone_name or default_input_device_id()
+            if payload.microphone_enabled and microphone_id not in microphone_ids:
+                raise HTTPException(400, "选择的本地麦克风已不存在，请重新选择")
             audio.start(
+                microphone_enabled=payload.microphone_enabled,
+                microphone_device_id=microphone_id,
                 loopback_device_name=selected,
                 fast_instructions=engine.instructions(),
                 asr_context=engine.asr_context(),
@@ -255,9 +267,11 @@ def create_app(root: Path | None = None) -> FastAPI:
         engine.active = True
         if selected:
             config.device_name = selected
-            config.save(app_root)
+        config.microphone_enabled = payload.microphone_enabled
+        config.microphone_name = microphone_id
+        config.save(app_root)
         bus.publish({"type": "interview_state", "running": True})
-        return {"ok": True, "loopbackDeviceName": selected}
+        return {"ok": True, "loopbackDeviceName": selected, "microphoneDeviceId": microphone_id}
 
     @app.get("/api/audio/probe")
     def probe_audio():

@@ -59,6 +59,7 @@ class AliyunRealtimeAnswerStream:
         self._ws = None
         self._socket_thread: threading.Thread | None = None
         self._sender_thread: threading.Thread | None = None
+        self._send_lock = threading.Lock()
 
     @property
     def url(self) -> str:
@@ -148,6 +149,18 @@ class AliyunRealtimeAnswerStream:
             except queue.Empty:
                 break
 
+    def update_instructions(self, instructions: str) -> None:
+        """Refresh candidate/context guidance without creating a response."""
+        value = instructions.strip()
+        if not value or not self._configured.is_set() or self._stopped.is_set() or not self._ws:
+            return
+        self.instructions = value
+        self._send_json({"type": "session.update", "session": {"instructions": value}})
+
+    def _send_json(self, payload: dict) -> None:
+        with self._send_lock:
+            self._ws.send(json.dumps(payload, ensure_ascii=False))
+
     def _on_open(self, ws) -> None:
         turn_detection: dict[str, object]
         if self.turn_detection == "smart_turn":
@@ -158,8 +171,8 @@ class AliyunRealtimeAnswerStream:
                 "threshold": 0.2,
                 "silence_duration_ms": 900,
             }
-        ws.send(
-            json.dumps(
+        self._ws = ws
+        self._send_json(
                 {
                     "type": "session.update",
                     "session": {
@@ -167,11 +180,9 @@ class AliyunRealtimeAnswerStream:
                         "instructions": self.instructions,
                         "input_audio_transcription": {"model": "fun-asr"},
                         "turn_detection": turn_detection,
-                        "max_history_turns": 2,
+                        "max_history_turns": 8,
                     },
-                },
-                ensure_ascii=False,
-            )
+                }
         )
 
     def _on_message(self, _ws, message: str) -> None:
@@ -304,13 +315,11 @@ class AliyunRealtimeAnswerStream:
             if pcm is None:
                 return
             try:
-                self._ws.send(
-                    json.dumps(
+                self._send_json(
                         {
                             "type": "input_audio_buffer.append",
                             "audio": base64.b64encode(pcm).decode("ascii"),
                         }
-                    )
                 )
             except Exception as exc:
                 if not self._stopped.is_set():

@@ -36,12 +36,15 @@
       <div class="section-title"><div><span class="step">02</span><h2>实时会话</h2></div><span id="liveBadge" class="live-dot">未开始</span></div>
       <div class="controls">
         <label class="device-control">系统声音<select id="loopbackDevice" class="loopback-device"></select></label>
+        <label class="microphone-toggle"><input id="microphoneEnabled" type="checkbox">听取我的回答</label>
+        <label id="microphoneDeviceWrap" class="device-control hidden">本地麦克风<select id="microphoneDevice" class="microphone-device"></select></label>
         <button id="scanDevicesButton" class="secondary compact">检测会议声音</button>
         <button id="startButton" class="primary">开始</button><button id="stopButton" class="danger" disabled>停止</button>
       </div>
-      <div class="audio-levels"><label>系统声 <meter id="interviewerLevel" min="0" max="1" value="0"></meter><span id="interviewerLevelText">未检测</span></label></div>
+      <div class="audio-levels"><label>系统声 <meter id="interviewerLevel" min="0" max="1" value="0"></meter><span id="interviewerLevelText">未检测</span></label><label id="candidateLevelWrap" class="hidden">我的声音 <meter id="candidateLevel" min="0" max="1" value="0"></meter><span id="candidateLevelText">未检测</span></label></div>
       <div id="transcript" class="transcript"><div class="empty">Qwen 会直接转写面试官的系统声音。</div></div>
       <p class="hint">关闭最后一个浏览器页面后，录音与 Qwen 连接会自动停止。</p>
+      <p class="hint">“听取我的回答”开启后，麦克风音频会发送到阿里云做独立转写，仅用于理解后续追问，不会触发新回答。</p>
     </section>
 
     <section class="answer card">
@@ -55,7 +58,7 @@
         <button id="saveRealtimeButton" class="secondary compact">保存设置</button>
       </div>
       <div id="questionBox" class="question-box">识别到完整问题后会显示在这里。</div>
-      <div class="question-memory"><span class="muted">最近技术问题</span><div id="questionMemory"><span class="muted">尚无确认问题</span></div></div>
+      <div class="question-memory"><span class="muted">当前技术主题追问链</span><div id="questionMemory"><span class="muted">尚无确认问题</span></div></div>
       <article id="answerOutput" class="answer-output"><div class="empty">系统音频先由专用 Qwen ASR 转写，再由 Qwen Plus 流式回答。</div></article>
     </section>
   </main>

@@ -46,7 +46,7 @@ def test_prompt_contains_jd_and_confirmed_candidate_facts(tmp_path):
     assert "不得编造" in prompt
 
 
-def test_prompt_contains_external_source_and_remembers_only_two_questions(tmp_path):
+def test_prompt_contains_external_source_and_keeps_active_follow_up_chain(tmp_path):
     bus = EventBus()
     events = bus.subscribe()
     engine = QwenOnlyEngine(tmp_path, bus)
@@ -64,5 +64,53 @@ def test_prompt_contains_external_source_and_remembers_only_two_questions(tmp_pa
     engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "filler", "text": "嗯。"})
 
     assert "Agent Loop" in engine.instructions()
-    assert engine.answer_snapshot()["recentQuestions"] == ["请介绍第1个项目的实现流程", "请介绍第2个项目的实现流程"]
+    assert engine.answer_snapshot()["recentQuestions"] == [
+        "请介绍第0个项目的实现流程",
+        "请介绍第1个项目的实现流程",
+        "请介绍第2个项目的实现流程",
+    ]
     assert any(event["type"] == "question_memory" for event in list(events.queue))
+
+
+def test_candidate_answer_updates_context_without_triggering_an_answer(tmp_path, monkeypatch):
+    engine = QwenOnlyEngine(tmp_path, EventBus())
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    calls = []
+    class AnswerCall:
+        def __call__(self, *args):
+            calls.append(args)
+    monkeypatch.setattr(engine.text_answerer, "answer", AnswerCall())
+
+    engine.on_asr_text("candidate", "我采用了 ReAct 循环，并为工具调用设置超时。", True)
+
+    assert calls == []
+    assert "ReAct 循环" in engine.instructions()
+    assert engine.answer_snapshot()["candidateAnswers"] == ["我采用了 ReAct 循环，并为工具调用设置超时。"]
+    assert "ReAct 循环" in (engine.session.path / "candidate-transcript.md").read_text(encoding="utf-8")
+
+
+def test_explicit_new_topic_resets_follow_up_chain(tmp_path):
+    engine = QwenOnlyEngine(tmp_path, EventBus())
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q1", "text": "你的 Agent 工作流程是什么？"})
+    engine.on_asr_text("candidate", "先规划再调用工具。", True)
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q2", "text": "下一个问题，如何处理缓存击穿？"})
+
+    assert engine.answer_snapshot()["recentQuestions"] == ["下一个问题，如何处理缓存击穿？"]
+    assert engine.answer_snapshot()["candidateAnswers"] == []
+
+
+def test_interviewer_echo_from_microphone_is_not_candidate_context(tmp_path):
+    engine = QwenOnlyEngine(tmp_path, EventBus())
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q1", "text": "请介绍一下 Agent 的工作流程？"})
+
+    engine.on_asr_text("candidate", "请介绍一下 Agent 的工作流程", True)
+
+    assert engine.answer_snapshot()["candidateAnswers"] == []

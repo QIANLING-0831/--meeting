@@ -7,7 +7,7 @@ from typing import Callable
 
 import numpy as np
 
-from .audio import LoopbackAudioProcessor, capture_loopback
+from .audio import LoopbackAudioProcessor, capture_loopback, capture_microphone
 from .config import AppConfig
 from .models import Speaker
 from .qwen_realtime import AliyunRealtimeAnswerStream
@@ -28,16 +28,19 @@ class StreamingAudioCoordinator:
         on_audio_level: Callable[[Speaker, float], None] | None = None,
         on_audio_status: Callable[[Speaker, str, str], None] | None = None,
         on_fast_event: Callable[[dict], None] | None = None,
+        instructions_provider: Callable[[], str] | None = None,
     ) -> None:
         self.config = config
         self.on_text = on_text
         self.on_audio_level = on_audio_level
         self.on_audio_status = on_audio_status
         self.on_fast_event = on_fast_event
+        self.instructions_provider = instructions_provider
         self.stop_event = Event()
         self.channels: list[_Channel] = []
         self.fast_stream: AliyunRealtimeAnswerStream | None = None
         self.asr_stream: QwenAsrStream | None = None
+        self.candidate_stream: QwenAsrStream | None = None
         self._last_level_at: dict[Speaker, float] = {}
         self._silent_since: dict[Speaker, float] = {}
         self._silence_reported: set[Speaker] = set()
@@ -81,6 +84,26 @@ class StreamingAudioCoordinator:
             )
             self.fast_stream.start()
         self._start_channel("interviewer", capture_loopback, selected_loopback)
+        use_microphone = self.config.microphone_enabled if microphone_enabled is None else microphone_enabled
+        if use_microphone:
+            if not self.on_text:
+                raise RuntimeError("候选人麦克风文本处理器未配置")
+            self.candidate_stream = QwenAsrStream(
+                self._on_candidate_text,
+                lambda event: self.on_fast_event({**event, "speaker": "candidate"}),
+                model=self.config.qwen_asr_model,
+                workspace_id=self.config.qwen_realtime_workspace_id,
+                context=asr_context,
+                vocabulary=asr_vocabulary,
+            )
+            self.candidate_stream.start()
+            self._start_channel("candidate", capture_microphone, microphone_device_id)
+
+    def _on_candidate_text(self, text: str, final: bool) -> None:
+        if self.on_text:
+            self.on_text("candidate", text, final)
+        if final and self.fast_stream and self.instructions_provider:
+            self.fast_stream.update_instructions(self.instructions_provider())
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -90,6 +113,9 @@ class StreamingAudioCoordinator:
         if self.asr_stream:
             self.asr_stream.stop()
             self.asr_stream = None
+        if self.candidate_stream:
+            self.candidate_stream.stop()
+            self.candidate_stream = None
         for channel in self.channels:
             channel.thread.join(timeout=3)
         self.channels.clear()
@@ -135,6 +161,8 @@ class StreamingAudioCoordinator:
                 # and gain changes introduce discontinuities and can collapse
                 # quiet/flat loopback blocks to zero.
                 self.asr_stream.send(block, sample_rate)
+            if speaker == "candidate" and self.candidate_stream:
+                self.candidate_stream.send(block, sample_rate)
 
         def report_capture_status(status: str, message: str) -> None:
             if self.on_audio_status:
@@ -149,6 +177,14 @@ class StreamingAudioCoordinator:
                     max(0.04, min(self.config.block_seconds, 0.1)),
                     send_block,
                     on_status=report_capture_status,
+                )
+            else:
+                capture(
+                    self.stop_event,
+                    device_name,
+                    self.config.sample_rate,
+                    max(0.04, min(self.config.block_seconds, 0.1)),
+                    send_block,
                 )
 
         thread = Thread(

@@ -37,7 +37,23 @@ def test_session_is_text_only_and_uses_sensitive_server_vad_by_default():
         "silence_duration_ms": 900,
     }
     assert session["instructions"] == "只回答面试问题"
-    assert session["max_history_turns"] == 2
+    assert session["max_history_turns"] == 8
+
+
+def test_instructions_can_be_refreshed_without_requesting_a_response():
+    stream = build_stream([])
+    socket = FakeSocket()
+    stream._ws = socket
+    stream._configured.set()
+
+    stream.update_instructions("候选人刚才回答：使用了 ReAct")
+
+    assert socket.messages == [
+        {
+            "type": "session.update",
+            "session": {"instructions": "候选人刚才回答：使用了 ReAct"},
+        }
+    ]
 
 
 def test_smart_turn_can_still_be_selected_explicitly():
