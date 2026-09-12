@@ -14,7 +14,7 @@ class AppConfig:
     aliyun_api_key: str = field(default="", repr=False)
     device_name: str = ""
     sample_rate: int = 48_000
-    block_seconds: float = 0.1
+    block_seconds: float = 0.04
     silence_seconds: float = 1.0
     min_speech_seconds: float = 0.8
     silence_rms: float = 0.006
@@ -31,7 +31,7 @@ class AppConfig:
     qwen_realtime_enabled: bool = True
     qwen_realtime_model: str = "qwen-audio-3.0-realtime-plus"
     qwen_realtime_workspace_id: str = ""
-    qwen_realtime_turn_detection: str = "smart_turn"
+    qwen_realtime_turn_detection: str = "server_vad"
     browser_disconnect_grace_seconds: float = 2.0
 
     @classmethod

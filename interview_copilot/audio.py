@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from threading import Event
+from threading import Event, Lock, Thread
 from typing import Callable
 
 import numpy as np
@@ -27,12 +27,16 @@ class LoopbackAudioProcessor:
         max_gain: float = 10.0,
         gain_release: float = 0.85,
         peak_limit: float = 0.95,
+        initial_noise_rms: float = 0.0003,
+        noise_ratio: float = 1.5,
     ) -> None:
         self.silence_rms = silence_rms
         self.target_rms = target_rms
         self.max_gain = max_gain
         self.gain_release = gain_release
         self.peak_limit = peak_limit
+        self.noise_rms = initial_noise_rms
+        self.noise_ratio = noise_ratio
         self.gain: float | None = None
 
     def process(self, audio: np.ndarray) -> np.ndarray:
@@ -41,8 +45,17 @@ class LoopbackAudioProcessor:
             return samples
         centered = samples - float(np.mean(samples))
         rms = float(np.sqrt(np.mean(np.square(centered))))
-        if rms < self.silence_rms:
+        if rms < 1e-7:
             return np.zeros_like(samples)
+
+        # Never erase a non-digital signal. Quiet meeting audio can sit below a
+        # fixed gate, especially with Bluetooth/virtual endpoints. Learn the
+        # device noise floor and only amplify blocks sufficiently above it;
+        # probable noise is passed through unchanged for server-side VAD.
+        speech_threshold = max(1e-7, self.noise_rms * self.noise_ratio)
+        if rms <= speech_threshold:
+            self.noise_rms = 0.98 * self.noise_rms + 0.02 * rms
+            return centered.astype(np.float32, copy=False)
 
         desired_gain = min(self.max_gain, max(0.5, self.target_rms / rms))
         if self.gain is None or desired_gain <= self.gain:
@@ -81,6 +94,44 @@ def list_loopback_devices() -> list[AudioDevice]:
     devices = sc.all_microphones(include_loopback=True)
     loopbacks = [d for d in devices if getattr(d, "isloopback", False)]
     return [AudioDevice(name=d.name, id=str(d.id)) for d in loopbacks]
+
+
+def probe_loopback_levels(
+    *, duration_seconds: float = 1.0, sample_rate: int = 48_000
+) -> list[dict]:
+    """Measure all loopback endpoints concurrently without changing selection."""
+    devices = list_loopback_devices()
+    stop = Event()
+    lock = Lock()
+    peaks = {device.name: 0.0 for device in devices}
+
+    def callback_for(name: str):
+        def on_block(block: np.ndarray, _rate: int) -> None:
+            rms = float(np.sqrt(np.mean(np.square(block)))) if block.size else 0.0
+            with lock:
+                peaks[name] = max(peaks[name], rms)
+
+        return on_block
+
+    threads = [
+        Thread(
+            target=capture_loopback,
+            args=(stop, device.name, sample_rate, 0.04, callback_for(device.name)),
+            daemon=True,
+            name=f"probe-{index}",
+        )
+        for index, device in enumerate(devices)
+    ]
+    for thread in threads:
+        thread.start()
+    stop.wait(max(0.01, duration_seconds))
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=1.5)
+    return [
+        {"name": device.name, "id": device.id, "rms": peaks[device.name]}
+        for device in devices
+    ]
 
 
 def list_input_devices() -> list[AudioDevice]:

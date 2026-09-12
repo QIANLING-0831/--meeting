@@ -104,7 +104,7 @@ class StreamingAudioCoordinator:
                             self.on_audio_status(speaker, "connected", "系统声音已恢复")
             if self.on_audio_level and now - self._last_level_at.get(speaker, 0.0) >= 0.25:
                 db = 20.0 * np.log10(max(rms, 1e-6))
-                level = max(0.0, min(1.0, (db + 60.0) / 60.0))
+                level = max(0.0, min(1.0, (db + 80.0) / 80.0))
                 self.on_audio_level(speaker, level)
                 self._last_level_at[speaker] = now
             if speaker == "interviewer" and self.fast_stream:
@@ -120,7 +120,7 @@ class StreamingAudioCoordinator:
                     self.stop_event,
                     device_name,
                     self.config.sample_rate,
-                    self.config.block_seconds,
+                    min(self.config.block_seconds, 0.04),
                     send_block,
                     on_status=report_capture_status,
                 )

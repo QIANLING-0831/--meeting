@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .audio import list_loopback_devices
+from .audio import list_loopback_devices, probe_loopback_levels
 from .config import AppConfig
 from .event_bus import EventBus
 from .qwen_only import QwenOnlyEngine
@@ -124,6 +124,13 @@ def create_app(root: Path | None = None) -> FastAPI:
     app.state.browser_connections = browser_connections
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
+    @app.middleware("http")
+    async def disable_ui_cache(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html")
@@ -187,6 +194,21 @@ def create_app(root: Path | None = None) -> FastAPI:
         selected = payload.loopback_device_name.strip() or config.device_name
         if selected and selected not in {item.name for item in devices}:
             raise HTTPException(400, "选择的系统声音设备已不存在，请重新选择")
+        measured = probe_loopback_levels(duration_seconds=0.8)
+        if measured:
+            best = max(measured, key=lambda item: item["rms"])
+            selected_rms = next(
+                (item["rms"] for item in measured if item["name"] == selected), 0.0
+            )
+            if best["rms"] >= 0.0005 and best["rms"] > max(selected_rms * 1.8, selected_rms + 0.0002):
+                selected = best["name"]
+                bus.publish(
+                    {
+                        "type": "audio_device_selected",
+                        "name": selected,
+                        "message": f"已自动切换到检测到会议声音的设备：{selected}",
+                    }
+                )
         try:
             audio.start(loopback_device_name=selected, fast_instructions=engine.instructions())
         except Exception as exc:
@@ -197,7 +219,13 @@ def create_app(root: Path | None = None) -> FastAPI:
             config.device_name = selected
             config.save(app_root)
         bus.publish({"type": "interview_state", "running": True})
-        return {"ok": True}
+        return {"ok": True, "loopbackDeviceName": selected}
+
+    @app.get("/api/audio/probe")
+    def probe_audio():
+        if engine.active:
+            raise HTTPException(409, "请先停止实时会话，再检测设备")
+        return {"devices": probe_loopback_levels(duration_seconds=1.2)}
 
     @app.post("/api/interview/stop")
     def stop_interview():

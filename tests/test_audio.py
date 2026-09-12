@@ -89,6 +89,17 @@ def test_loopback_processor_does_not_promote_low_level_device_noise_to_speech():
     assert float(np.sqrt(np.mean(np.square(processed)))) < 0.001
 
 
+def test_loopback_processor_does_not_erase_very_quiet_speech():
+    processor = audio.LoopbackAudioProcessor()
+    phase = np.linspace(0, 12 * np.pi, 4_800, endpoint=False)
+    quiet_speech = (np.sin(phase) * 0.00095).astype(np.float32)
+
+    processed = processor.process(quiet_speech)
+
+    assert np.count_nonzero(processed) > 0
+    assert float(np.sqrt(np.mean(np.square(processed)))) > 0.003
+
+
 def test_loopback_reopens_after_windows_invalidates_the_audio_device(monkeypatch):
     stop = Event()
     received = []
@@ -178,3 +189,20 @@ def test_loopback_records_all_wasapi_channels_then_downmixes(monkeypatch):
 
     assert received[0][1] == 48_000
     assert np.allclose(received[0][0], 0.3)
+
+
+def test_probe_loopback_levels_measures_all_devices_in_parallel(monkeypatch):
+    devices = [audio.AudioDevice("quiet", "1"), audio.AudioDevice("meeting", "2")]
+    monkeypatch.setattr(audio, "list_loopback_devices", lambda: devices)
+
+    def fake_capture(stop, name, _rate, _seconds, on_block, **_options):
+        value = 0.02 if name == "meeting" else 0.0
+        on_block(np.full(1_600, value, dtype=np.float32), 16_000)
+        stop.wait()
+
+    monkeypatch.setattr(audio, "capture_loopback", fake_capture)
+
+    levels = audio.probe_loopback_levels(duration_seconds=0.01)
+
+    assert [item["name"] for item in levels] == ["quiet", "meeting"]
+    assert levels[1]["rms"] > levels[0]["rms"]

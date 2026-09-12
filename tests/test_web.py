@@ -10,7 +10,8 @@ from interview_copilot.web import create_app
 def test_home_and_status_are_qwen_only(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     with TestClient(create_app(tmp_path)) as client:
-        page = client.get("/").text
+        home = client.get("/")
+        page = home.text
         status = client.get("/api/status").json()
 
     assert 'id="loopbackDevice"' in page
@@ -20,6 +21,7 @@ def test_home_and_status_are_qwen_only(tmp_path, monkeypatch):
     assert status["aliyunConfigured"] is False
     assert "loopbackDevices" in status
     assert status["answerSnapshot"]["text"] == ""
+    assert home.headers["cache-control"] == "no-store"
 
 
 def test_last_browser_disconnect_stops_active_interview_after_grace_period(tmp_path):
@@ -103,6 +105,10 @@ def test_start_interview_uses_selected_loopback_and_qwen_prompt(tmp_path, monkey
         "interview_copilot.web.list_loopback_devices",
         lambda: [SimpleNamespace(name="扬声器", id="device-1")],
     )
+    monkeypatch.setattr(
+        "interview_copilot.web.probe_loopback_levels",
+        lambda **_options: [{"name": "扬声器", "id": "device-1", "rms": 0.02}],
+    )
     app = create_app(tmp_path)
     app.state.engine.session, _ = app.state.engine.sessions.create(
         company="测试公司", position="Agent", jd_text="JD", resume_path=None, knowledge_packs=[]
@@ -117,3 +123,29 @@ def test_start_interview_uses_selected_loopback_and_qwen_prompt(tmp_path, monkey
     assert calls[0]["loopback_device_name"] == "扬声器"
     assert "测试公司" in calls[0]["fast_instructions"]
     assert AppConfig.load(tmp_path).device_name == "扬声器"
+
+
+def test_start_auto_selects_the_device_that_has_meeting_audio(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-12345678")
+    devices = [SimpleNamespace(name="旧扬声器", id="1"), SimpleNamespace(name="腾讯会议扬声器", id="2")]
+    monkeypatch.setattr("interview_copilot.web.list_loopback_devices", lambda: devices)
+    monkeypatch.setattr(
+        "interview_copilot.web.probe_loopback_levels",
+        lambda **_options: [
+            {"name": "旧扬声器", "id": "1", "rms": 0.0},
+            {"name": "腾讯会议扬声器", "id": "2", "rms": 0.015},
+        ],
+    )
+    app = create_app(tmp_path)
+    app.state.engine.session, _ = app.state.engine.sessions.create(
+        company="测试", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    calls = []
+    monkeypatch.setattr(app.state.audio, "start", lambda **options: calls.append(options))
+
+    with TestClient(app) as client:
+        response = client.post("/api/interview/start", json={"loopback_device_name": "旧扬声器"})
+
+    assert response.status_code == 200
+    assert response.json()["loopbackDeviceName"] == "腾讯会议扬声器"
+    assert calls[0]["loopback_device_name"] == "腾讯会议扬声器"

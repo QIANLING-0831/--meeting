@@ -24,6 +24,7 @@ def test_system_audio_is_sent_only_to_qwen(monkeypatch):
             return None
 
     def fake_capture(stop: Event, _device_name, sample_rate, _block_seconds, on_block, **_options):
+        assert _block_seconds == 0.04
         on_block(np.full(4_800, 0.01, dtype=np.float32), sample_rate)
         stop.set()
 

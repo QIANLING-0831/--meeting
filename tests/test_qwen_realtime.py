@@ -22,7 +22,7 @@ def build_stream(events, **options):
     )
 
 
-def test_session_is_text_only_and_uses_smart_turn():
+def test_session_is_text_only_and_uses_sensitive_server_vad_by_default():
     events = []
     stream = build_stream(events)
     socket = FakeSocket()
@@ -31,9 +31,22 @@ def test_session_is_text_only_and_uses_smart_turn():
 
     session = socket.messages[0]["session"]
     assert session["modalities"] == ["text"]
-    assert session["turn_detection"] == {"type": "smart_turn"}
+    assert session["turn_detection"] == {
+        "type": "server_vad",
+        "threshold": 0.2,
+        "silence_duration_ms": 900,
+    }
     assert session["instructions"] == "只回答面试问题"
     assert session["max_history_turns"] == 8
+
+
+def test_smart_turn_can_still_be_selected_explicitly():
+    stream = build_stream([], turn_detection="smart_turn")
+    socket = FakeSocket()
+
+    stream._on_open(socket)
+
+    assert socket.messages[0]["session"]["turn_detection"] == {"type": "smart_turn"}
 
 
 def test_workspace_id_selects_dedicated_beijing_endpoint():
@@ -93,6 +106,28 @@ def test_text_events_are_mapped_to_fast_channel_events():
     ]
     assert events[1]["text"] == "什么是 RAG？"
     assert events[3]["delta"] == "RAG 是"
+
+
+def test_transcription_progress_invalid_turn_and_failures_are_exposed():
+    events = []
+    stream = build_stream(events)
+
+    stream._on_message(None, json.dumps({"type": "input_audio_buffer.speech_started", "item_id": "q1"}))
+    stream._on_message(None, json.dumps({"type": "conversation.item.input_audio_transcription.delta", "item_id": "q1", "text": "Function", "stash": " Calling"}))
+    stream._on_message(None, json.dumps({"type": "conversation.item.ambient_audio_transcription.completed", "item_id": "a1", "transcript": "RRF 融合召回"}))
+    stream._on_message(None, json.dumps({"type": "input_audio_buffer.speech_stopped", "item_id": "a1", "reason": "turn_invalid"}))
+    stream._on_message(None, json.dumps({"type": "conversation.item.input_audio_transcription.failed", "item_id": "q2", "error": {"message": "ASR failed"}}))
+
+    assert [event["type"] for event in events] == [
+        "qwen_speech_started",
+        "qwen_transcript_delta",
+        "qwen_ambient_transcript",
+        "qwen_turn_invalid",
+        "fast_answer_error",
+    ]
+    assert events[1]["text"] == "Function Calling"
+    assert events[2]["text"] == "RRF 融合召回"
+    assert "ASR failed" in events[4]["message"]
 
 
 def test_qwen_only_coordinator_always_creates_qwen_connection(monkeypatch):

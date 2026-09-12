@@ -33,7 +33,7 @@ class AliyunRealtimeAnswerStream:
         model: str = "qwen-audio-3.0-realtime-flash",
         api_key: str | None = None,
         workspace_id: str = "",
-        turn_detection: str = "smart_turn",
+        turn_detection: str = "server_vad",
         instructions: str = "",
     ) -> None:
         self._api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
@@ -155,8 +155,8 @@ class AliyunRealtimeAnswerStream:
         else:
             turn_detection = {
                 "type": "server_vad",
-                "threshold": 0.5,
-                "silence_duration_ms": 600,
+                "threshold": 0.2,
+                "silence_duration_ms": 900,
             }
         ws.send(
             json.dumps(
@@ -165,6 +165,7 @@ class AliyunRealtimeAnswerStream:
                     "session": {
                         "modalities": ["text"],
                         "instructions": self.instructions,
+                        "input_audio_transcription": {"model": "fun-asr"},
                         "turn_detection": turn_detection,
                         "max_history_turns": 8,
                     },
@@ -182,12 +183,62 @@ class AliyunRealtimeAnswerStream:
         if event_type == "session.updated":
             self._configured.set()
             self.on_event({"type": "fast_channel_ready", "model": self.model})
+        elif event_type == "input_audio_buffer.speech_started":
+            self.on_event(
+                {"type": "qwen_speech_started", "itemId": event.get("item_id", "")}
+            )
+        elif event_type == "input_audio_buffer.speech_stopped":
+            mapped_type = (
+                "qwen_turn_invalid"
+                if event.get("reason") == "turn_invalid"
+                else "qwen_speech_stopped"
+            )
+            self.on_event(
+                {
+                    "type": mapped_type,
+                    "itemId": event.get("item_id", ""),
+                    "reason": event.get("reason", ""),
+                }
+            )
+        elif event_type == "conversation.item.input_audio_transcription.delta":
+            self.on_event(
+                {
+                    "type": "qwen_transcript_delta",
+                    "itemId": event.get("item_id", ""),
+                    "text": f"{event.get('text', '')}{event.get('stash', '')}",
+                }
+            )
         elif event_type == "conversation.item.input_audio_transcription.completed":
             self.on_event(
                 {
                     "type": "fast_question_transcript",
                     "text": event.get("transcript", ""),
                     "itemId": event.get("item_id", ""),
+                }
+            )
+        elif event_type in {
+            "conversation.item.ambient_audio_transcription.delta",
+            "conversation.item.ambient_audio_transcription.completed",
+        }:
+            text = (
+                event.get("transcript", "")
+                if event_type.endswith(".completed")
+                else f"{event.get('text', '')}{event.get('stash', '')}"
+            )
+            self.on_event(
+                {
+                    "type": "qwen_ambient_transcript",
+                    "itemId": event.get("item_id", ""),
+                    "text": text,
+                    "final": event_type.endswith(".completed"),
+                }
+            )
+        elif event_type == "conversation.item.input_audio_transcription.failed":
+            error = event.get("error") or {}
+            self.on_event(
+                {
+                    "type": "fast_answer_error",
+                    "message": f"Qwen 转写失败：{error.get('message', '未知错误')}",
                 }
             )
         elif event_type == "response.created":

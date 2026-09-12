@@ -21,7 +21,7 @@ if __name__ == "__main__":
         root_dir = Path(__file__).resolve().parent
         config = AppConfig.load(root_dir)
         if not args.no_browser:
-            url = f"http://{config.web_host}:{config.web_port}"
+            url = f"http://{config.web_host}:{config.web_port}/?v=qwen-audio-fix-1"
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         uvicorn.run(
             "interview_copilot.web:create_app",

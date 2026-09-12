@@ -62,6 +62,7 @@ dialog form { margin: 0; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .dialog-head h2 { font-size: 17px; }
 #aliyunKeyHint { margin: 0 0 18px; }
+.utterance.ambient { opacity: 0.72; border-style: dashed; }
 
 @media (max-width: 1100px) {
   main.setup-collapsed { grid-template-columns: 72px 1fr; }
