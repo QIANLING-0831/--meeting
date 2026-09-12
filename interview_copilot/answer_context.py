@@ -59,7 +59,7 @@ class AnswerContextProvider:
         ]
         if external:
             sections.append(
-                "外部题库与项目参考（只能作为通用知识，不得当作候选人亲历）：\n"
+                "外部题库与项目参考（可用于合理补全技术方案，但不得据此编造精确硬事实）：\n"
                 f"{external}"
             )
         if hits:
@@ -67,7 +67,7 @@ class AnswerContextProvider:
             for hit in hits:
                 local.append(f"### {hit.title}\n来源：{hit.source}\n{hit.content}")
             sections.append(
-                "本地知识库按题检索结果（只能作为通用知识，不得当作候选人亲历）：\n"
+                "本地知识库按题检索结果（可用于合理补全技术方案，但不得据此编造精确硬事实）：\n"
                 + "\n\n".join(local)[:10_000]
             )
 

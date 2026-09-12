@@ -43,7 +43,10 @@ def test_prompt_contains_jd_and_confirmed_candidate_facts(tmp_path):
 
     assert "需要 RAG 经验" in prompt
     assert "做过企业知识库项目" in prompt
-    assert "不得编造" in prompt
+    assert "补全一套合理、可落地" in prompt
+    assert "绝对不要输出" in prompt
+    assert "用户没有补充" in prompt
+    assert "不要捏造精确指标" in prompt
 
 
 def test_prompt_contains_external_source_and_keeps_active_follow_up_chain(tmp_path):
