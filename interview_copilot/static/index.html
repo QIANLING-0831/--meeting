@@ -14,13 +14,22 @@
   </header>
   <main>
     <section class="setup card">
-      <div class="section-title"><div><span class="step">01</span><h2>面试资料</h2></div><span id="sessionBadge" class="muted">尚未准备</span></div>
+      <div class="section-title"><div><span class="step">01</span><h2>面试资料</h2></div><div class="section-actions"><span id="sessionBadge" class="muted">尚未准备</span><button id="setupToggle" class="ghost compact">收起</button></div></div>
+      <div class="setup-body">
       <div class="two-col"><label>公司<input id="company" placeholder="例如：某科技公司"></label><label>岗位<input id="position" placeholder="例如：Agent 应用开发"></label></div>
       <label>岗位 JD<textarea id="jd" rows="5" placeholder="粘贴本次岗位描述"></textarea></label>
       <label class="file-label">简历（PDF / MD / TXT）<input id="resume" type="file" accept=".pdf,.md,.txt"></label>
       <button id="prepareButton" class="primary wide">生成本次面试工作区</button>
       <label id="factsWrap" class="hidden">候选人事实与项目描述（请核对、补充后保存）<textarea id="facts" rows="9"></textarea></label>
       <button id="saveFactsButton" class="secondary wide hidden">保存候选人事实</button>
+      <div class="external-sources">
+        <div class="packs-head"><span>外部题库 / 项目仓库</span><span class="muted">支持公开 GitHub 仓库</span></div>
+        <input id="sourceLabel" placeholder="名称，例如：Agent 题库">
+        <div class="source-add"><input id="sourceUrl" placeholder="https://github.com/所有者/仓库"><button id="addSourceButton" class="secondary compact">添加</button></div>
+        <div id="sourceList" class="source-list"><span class="muted">尚未添加外部资料</span></div>
+        <p class="hint">运行中添加后，需要停止并重新开始，新的资料才会进入 Qwen 上下文。</p>
+      </div>
+      </div>
     </section>
 
     <section class="live card">
@@ -46,6 +55,7 @@
         <button id="saveRealtimeButton" class="secondary compact">保存设置</button>
       </div>
       <div id="questionBox" class="question-box">识别到完整问题后会显示在这里。</div>
+      <div class="question-memory"><span class="muted">最近技术问题</span><div id="questionMemory"><span class="muted">尚无确认问题</span></div></div>
       <article id="answerOutput" class="answer-output"><div class="empty">系统音频先由专用 Qwen ASR 转写，再由 Qwen Plus 流式回答。</div></article>
     </section>
   </main>

@@ -1,6 +1,7 @@
 .section-actions { display: flex; align-items: center; gap: 8px; }
 .compact { padding: 6px 8px; font-size: 11px; }
 .setup, .setup-body, main { transition: grid-template-columns .2s ease, opacity .15s ease; }
+.setup:not(.collapsed) { resize: horizontal; min-width: 280px; max-width: 48vw; }
 .setup.collapsed { padding: 18px 10px; overflow: hidden; }
 .setup.collapsed .setup-body,
 .setup.collapsed h2,
@@ -63,6 +64,13 @@ dialog form { margin: 0; }
 .dialog-head h2 { font-size: 17px; }
 #aliyunKeyHint { margin: 0 0 18px; }
 .utterance.ambient { opacity: 0.72; border-style: dashed; }
+.source-add { display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: end; }
+.source-add input { margin: 0; }
+.source-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.source-chip { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: #101613; font-size: 11px; }
+.question-memory { margin: 9px 0; font-size: 11px; }
+#questionMemory { display: flex; gap: 6px; overflow-x: auto; margin-top: 5px; }
+.memory-item { flex: 0 0 auto; max-width: 48%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; color: #cad6d0; background: #121916; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 1100px) {
   main.setup-collapsed { grid-template-columns: 72px 1fr; }

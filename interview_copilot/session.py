@@ -94,6 +94,27 @@ class SessionManager:
         path = self._safe_session_path(session_id) / "candidate-facts.md"
         path.write_text(text.strip(), encoding="utf-8")
 
+    def external_sources(self, session_id: str) -> list[dict]:
+        path = self._safe_session_path(session_id) / "external-sources.json"
+        if not path.exists():
+            return []
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, list) else []
+        except json.JSONDecodeError:
+            return []
+
+    def add_external_source(self, session_id: str, source) -> list[dict]:
+        sources = [item for item in self.external_sources(session_id) if item.get("url") != source.url]
+        sources.append(source.to_dict())
+        path = self._safe_session_path(session_id) / "external-sources.json"
+        path.write_text(json.dumps(sources, ensure_ascii=False, indent=2), encoding="utf-8")
+        return sources
+
+    def external_knowledge(self, session_id: str, limit: int = 16_000) -> str:
+        sections = [f"## {item.get('label', '外部资料')}\n来源：{item.get('url', '')}\n\n{item.get('content', '')}" for item in self.external_sources(session_id)]
+        return "\n\n".join(sections)[:limit]
+
     def append_text(self, session_id: str, filename: str, text: str) -> None:
         allowed = {
             "interviewer-transcript.md",

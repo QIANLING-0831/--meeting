@@ -1,5 +1,6 @@
 from interview_copilot.event_bus import EventBus
 from interview_copilot.qwen_only import QwenOnlyEngine
+from interview_copilot.external_sources import ImportedSource
 
 
 def test_qwen_transcript_and_answer_are_saved_and_published(tmp_path):
@@ -43,3 +44,25 @@ def test_prompt_contains_jd_and_confirmed_candidate_facts(tmp_path):
     assert "需要 RAG 经验" in prompt
     assert "做过企业知识库项目" in prompt
     assert "不得编造" in prompt
+
+
+def test_prompt_contains_external_source_and_remembers_only_two_questions(tmp_path):
+    bus = EventBus()
+    events = bus.subscribe()
+    engine = QwenOnlyEngine(tmp_path, bus)
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    engine.sessions.add_external_source(
+        engine.session.id,
+        ImportedSource("Agent 题库", "https://github.com/example/questions", "什么是 Agent Loop？"),
+    )
+    for index in range(3):
+        engine.on_qwen_event(
+            {"type": "fast_question_transcript", "itemId": f"q{index}", "text": f"请介绍第{index}个项目的实现流程"}
+        )
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "filler", "text": "嗯。"})
+
+    assert "Agent Loop" in engine.instructions()
+    assert engine.answer_snapshot()["recentQuestions"] == ["请介绍第1个项目的实现流程", "请介绍第2个项目的实现流程"]
+    assert any(event["type"] == "question_memory" for event in list(events.queue))

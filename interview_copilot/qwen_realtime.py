@@ -167,7 +167,7 @@ class AliyunRealtimeAnswerStream:
                         "instructions": self.instructions,
                         "input_audio_transcription": {"model": "fun-asr"},
                         "turn_detection": turn_detection,
-                        "max_history_turns": 8,
+                        "max_history_turns": 2,
                     },
                 },
                 ensure_ascii=False,

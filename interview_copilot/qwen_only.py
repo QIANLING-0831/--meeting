@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections import deque
 from pathlib import Path
 
 from .event_bus import EventBus
@@ -28,7 +29,9 @@ class QwenOnlyEngine:
         self._answer = ""
         self._response_id = ""
         self._answer_running = False
+        self._answer_touched = False
         self._last_transcript_item = ""
+        self._recent_questions: deque[str] = deque(maxlen=2)
         self.text_answerer = QwenTextAnswerer(
             self.on_qwen_event, answer_model, workspace_id=workspace_id
         )
@@ -43,6 +46,7 @@ class QwenOnlyEngine:
                 "text": self._answer,
                 "responseId": self._response_id,
                 "running": self._answer_running,
+                "recentQuestions": list(self._recent_questions),
             }
 
     def instructions(self) -> str:
@@ -50,6 +54,7 @@ class QwenOnlyEngine:
             return ""
         jd = (self.session.path / "jd.md").read_text(encoding="utf-8").strip()
         facts = (self.session.path / "candidate-facts.md").read_text(encoding="utf-8").strip()
+        external = self.sessions.external_knowledge(self.session.id)
         return f"""你是候选人的实时面试回答助手。请根据面试官的问题，用中文输出候选人可以马上口述的回答。
 
 规则：
@@ -58,6 +63,8 @@ class QwenOnlyEngine:
 3. 只能把“候选人事实”中的内容说成亲身经历；资料没有写明的经历、数字和成果不得编造。
 4. 技术题可以结合通用知识回答，但要清楚区分通用方案与候选人的真实经历。
 5. 听到停顿、语气词或不完整句时继续等待；不要抢答。
+6. 只保留最近两道完整技术问题作为上下文。当前话轮若只是“嗯、啊、好的”等语气词、残句或无关对话，输出空字符串，不覆盖上一道问题。
+7. 当前话轮若是追问、指代或被打断后的补充，结合最近两道技术问题还原真实意图后继续回答；只有明确的新问题才切换主题。
 
 岗位信息：
 公司：{self.session.company}
@@ -68,7 +75,22 @@ class QwenOnlyEngine:
 
 候选人事实（含简历和项目描述）：
 {facts[:18000]}
+
+外部题库与项目参考（只用于预测问题和补充通用技术知识，不得当作候选人亲历）：
+{external}
 """.strip()
+
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
+        if len(text.strip()) < 4 or text.strip("，。！？? ") in {"嗯", "啊", "好的", "行吧", "知道了"}:
+            return False
+        markers = ("?", "？", "吗", "呢", "怎么", "如何", "为什么", "什么", "介绍", "说说", "讲讲", "谈谈", "区别", "流程", "原理", "设计", "实现", "项目", "经验", "负责", "优缺点", "场景")
+        return any(marker in text for marker in markers)
+
+    def _remember_question(self, text: str) -> None:
+        if self._looks_like_question(text) and (not self._recent_questions or self._recent_questions[-1] != text):
+            self._recent_questions.append(text)
+            self.bus.publish({"type": "question_memory", "questions": list(self._recent_questions)})
 
     def asr_context(self) -> str:
         if not self.session:
@@ -99,6 +121,7 @@ class QwenOnlyEngine:
         entry = TranscriptEntry(speaker="interviewer", text=clean, final=True)
         with self._lock:
             self._question = clean
+            self._remember_question(clean)
         if self.session:
             self.sessions.append_text(
                 self.session.id,
@@ -120,6 +143,7 @@ class QwenOnlyEngine:
                 entry = TranscriptEntry(speaker="interviewer", text=text, final=True)
                 with self._lock:
                     self._question = text
+                    self._remember_question(text)
                 if self.session:
                     self.sessions.append_text(
                         self.session.id,
@@ -130,23 +154,28 @@ class QwenOnlyEngine:
         elif event_type == "fast_answer_started":
             with self._lock:
                 self._response_id = str(event.get("responseId", ""))
-                self._answer = ""
+                self._answer_touched = False
                 self._answer_running = True
         elif event_type == "fast_answer_delta":
             with self._lock:
                 if not self._response_id or event.get("responseId") == self._response_id:
+                    if not self._answer_touched:
+                        self._answer = ""
+                        self._answer_touched = True
                     self._answer += str(event.get("delta", ""))
         elif event_type == "fast_answer_text_done":
             text = str(event.get("text", "")).strip()
             with self._lock:
                 if text and (not self._response_id or event.get("responseId") == self._response_id):
                     self._answer = text
+                    self._answer_touched = True
         elif event_type == "fast_answer_completed":
             with self._lock:
                 self._answer_running = False
                 question = self._question
                 answer = self._answer.strip()
-            if self.session and answer:
+                answer_touched = self._answer_touched
+            if self.session and answer and answer_touched:
                 self.sessions.append_text(
                     self.session.id,
                     "answers.md",

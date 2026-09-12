@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from interview_copilot.config import AppConfig
 from interview_copilot.web import create_app
+from interview_copilot.external_sources import ImportedSource
 
 
 def test_home_and_status_are_qwen_only(tmp_path, monkeypatch):
@@ -149,3 +150,27 @@ def test_start_auto_selects_the_device_that_has_meeting_audio(tmp_path, monkeypa
     assert response.status_code == 200
     assert response.json()["loopbackDeviceName"] == "腾讯会议扬声器"
     assert calls[0]["loopback_device_name"] == "腾讯会议扬声器"
+
+
+def test_external_github_source_is_added_to_current_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "interview_copilot.web.import_github_source",
+        lambda url, label: ImportedSource(label, url, "什么是 Agent Loop？"),
+    )
+    app = create_app(tmp_path)
+    app.state.engine.session, _ = app.state.engine.sessions.create(
+        company="测试", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/session/{app.state.engine.session.id}/external-sources",
+            json={"label": "Agent 题库", "url": "https://github.com/example/questions"},
+        )
+        status = client.get("/api/status").json()
+
+    assert response.status_code == 200
+    assert status["session"]["externalSources"] == [
+        {"label": "Agent 题库", "url": "https://github.com/example/questions"}
+    ]
+    assert "Agent Loop" in app.state.engine.instructions()

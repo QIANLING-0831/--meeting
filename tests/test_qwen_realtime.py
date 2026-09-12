@@ -37,7 +37,7 @@ def test_session_is_text_only_and_uses_sensitive_server_vad_by_default():
         "silence_duration_ms": 900,
     }
     assert session["instructions"] == "只回答面试问题"
-    assert session["max_history_turns"] == 8
+    assert session["max_history_turns"] == 2
 
 
 def test_smart_turn_can_still_be_selected_explicitly():

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from .audio import list_loopback_devices, probe_loopback_levels
 from .config import AppConfig
 from .event_bus import EventBus
+from .external_sources import import_github_source
 from .qwen_only import QwenOnlyEngine
 from .streaming_audio import StreamingAudioCoordinator
 
@@ -25,6 +26,11 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 class FactsPayload(BaseModel):
     text: str
+
+
+class ExternalSourcePayload(BaseModel):
+    url: str
+    label: str = ""
 
 
 class StartPayload(BaseModel):
@@ -150,6 +156,10 @@ def create_app(root: Path | None = None) -> FastAPI:
             session_data = engine.session.to_dict()
             session_data["jd_text"] = (engine.session.path / "jd.md").read_text(encoding="utf-8")
             session_data["candidate_facts"] = (engine.session.path / "candidate-facts.md").read_text(encoding="utf-8")
+            session_data["externalSources"] = [
+                {"label": item.get("label", ""), "url": item.get("url", "")}
+                for item in engine.sessions.external_sources(engine.session.id)
+            ]
         api_key = os.getenv("DASHSCOPE_API_KEY", "")
         return {
             "aliyunConfigured": bool(api_key),
@@ -194,6 +204,18 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(404, "当前会话不存在")
         engine.sessions.update_candidate_facts(session_id, payload.text)
         return {"ok": True}
+
+    @app.post("/api/session/{session_id}/external-sources")
+    def add_external_source(session_id: str, payload: ExternalSourcePayload):
+        if not engine.session or engine.session.id != session_id:
+            raise HTTPException(404, "当前会话不存在")
+        try:
+            source = import_github_source(payload.url, payload.label)
+            sources = engine.sessions.add_external_source(session_id, source)
+        except Exception as exc:
+            raise HTTPException(400, f"外部资料导入失败：{exc}") from exc
+        visible = [{"label": item.get("label", ""), "url": item.get("url", "")} for item in sources]
+        return {"sources": visible, "requiresRestart": engine.active}
 
     @app.post("/api/interview/start")
     def start_interview(payload: StartPayload):
