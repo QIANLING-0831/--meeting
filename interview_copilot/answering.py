@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from .codex_app_server import CodexAppServerClient, CodexAppServerError
@@ -41,8 +43,17 @@ class InterviewEngine:
         self._answer_watchdog: threading.Timer | None = None
         self._first_token_retry_used = False
         self._obsolete_turn_ids: set[str] = set()
+        self.interim_question_stability_seconds = 0.65
+        self._interim_question_timer: threading.Timer | None = None
+        self._interim_question_generation = 0
+        self._promoted_question = ""
+        self._promoted_question_at = 0.0
+        self._fast_answer_buffer = ""
+        self._fast_question = ""
+        self._fast_response_id = ""
 
     def set_session(self, session: InterviewSession) -> None:
+        self._cancel_interim_question_timer()
         self.session = session
         self.question_assembler.reset()
 
@@ -53,10 +64,79 @@ class InterviewEngine:
             "running": bool(self.codex.turn_id),
         }
 
+    def fast_answer_snapshot(self) -> dict:
+        return {
+            "question": self._fast_question,
+            "text": self._fast_answer_buffer,
+            "responseId": self._fast_response_id,
+        }
+
+    def fast_answer_instructions(self) -> str:
+        if not self.session:
+            return ANSWER_INSTRUCTIONS
+        facts = (self.session.path / "candidate-facts.md").read_text(encoding="utf-8")
+        jd = (self.session.path / "jd.md").read_text(encoding="utf-8")
+        return f"""你是中文技术面试的快速回答通道。你听到的是面试官的系统声音。
+只在对方提出问题或要求解释、比较、举例时回答；寒暄、附和、候选人的回答内容不要回应。
+只输出一段可直接口述的中文纯文本，第一句立即给结论，总长度控制在80到150个汉字。
+不要标题、列表、Markdown、反问或结束语。信息不足时给通用技术回答，不得编造候选人经历。
+
+岗位JD：
+{jd[:1600]}
+
+候选人已确认事实：
+{facts[:2400]}"""
+
+    def on_fast_event(self, event: dict) -> None:
+        event_type = event.get("type")
+        if event_type == "fast_question_transcript":
+            self._fast_question = str(event.get("text", "")).strip()
+        elif event_type == "fast_answer_started":
+            self._fast_response_id = str(event.get("responseId", ""))
+            self._fast_answer_buffer = ""
+        elif event_type == "fast_answer_delta":
+            response_id = str(event.get("responseId", ""))
+            if self._fast_response_id and response_id != self._fast_response_id:
+                return
+            self._fast_answer_buffer += str(event.get("delta", ""))
+        elif event_type == "fast_answer_text_done":
+            response_id = str(event.get("responseId", ""))
+            if self._fast_response_id and response_id != self._fast_response_id:
+                return
+            complete_text = str(event.get("text", "")).strip()
+            if complete_text:
+                self._fast_answer_buffer = complete_text
+        elif event_type == "fast_answer_completed":
+            response_id = str(event.get("responseId", ""))
+            if self._fast_response_id and response_id != self._fast_response_id:
+                return
+            if (
+                event.get("status") == "completed"
+                and self.session
+                and self._fast_answer_buffer.strip()
+            ):
+                stamp = datetime.now().isoformat(timespec="seconds")
+                self.sessions.append_text(
+                    self.session.id,
+                    "answers.md",
+                    f"\n## {stamp} 快速通道：{self._fast_question or '语音问题'}\n\n"
+                    f"{self._fast_answer_buffer.strip()}\n",
+                )
+        self.bus.publish(event)
+
     def ingest_transcript(self, speaker: Speaker, text: str, final: bool = True) -> None:
         entry = TranscriptEntry(speaker=speaker, text=text.strip(), final=final)
         self.bus.publish({"type": "transcript", "entry": entry.to_dict()})
-        if not final or not entry.text or not self.session:
+        if not entry.text or not self.session:
+            return
+        if not final:
+            if speaker == "interviewer" and self.active:
+                self._schedule_stable_interim_question(entry.text)
+            elif speaker == "candidate":
+                self._cancel_interim_question_timer()
+            return
+        self._cancel_interim_question_timer()
+        if speaker == "interviewer" and self._is_promoted_duplicate(entry.text):
             return
         filename = "interviewer-transcript.md" if speaker == "interviewer" else "candidate-transcript.md"
         label = "面试官" if speaker == "interviewer" else "我"
@@ -75,7 +155,59 @@ class InterviewEngine:
         else:
             self.question_assembler.reset()
 
-    def schedule_answer(self, question: str, delay: float = 1.5) -> None:
+    def _schedule_stable_interim_question(self, text: str) -> None:
+        candidate = self.detector.detect(text)
+        self._cancel_interim_question_timer()
+        if candidate is None:
+            return
+        self._interim_question_generation += 1
+        generation = self._interim_question_generation
+        timer = threading.Timer(
+            self.interim_question_stability_seconds,
+            self._commit_stable_interim_question,
+            args=(generation, candidate.text),
+        )
+        timer.daemon = True
+        self._interim_question_timer = timer
+        timer.start()
+
+    def _cancel_interim_question_timer(self) -> None:
+        self._interim_question_generation += 1
+        if self._interim_question_timer:
+            self._interim_question_timer.cancel()
+            self._interim_question_timer = None
+
+    def _commit_stable_interim_question(self, generation: int, text: str) -> None:
+        if generation != self._interim_question_generation or not self.active:
+            return
+        self._interim_question_timer = None
+        self.ingest_transcript("interviewer", text, final=True)
+        self._promoted_question = text
+        self._promoted_question_at = time.monotonic()
+
+    @staticmethod
+    def _question_key(text: str) -> str:
+        return "".join(
+            char.casefold()
+            for char in text
+            if not char.isspace() and char not in "，,。.!！?？；;：:"
+        )
+
+    def _is_promoted_duplicate(self, text: str) -> bool:
+        if not self._promoted_question or time.monotonic() - self._promoted_question_at > 4.0:
+            return False
+        current = self._question_key(text)
+        promoted = self._question_key(self._promoted_question)
+        if not current or not promoted:
+            return False
+        return (
+            current == promoted
+            or current in promoted
+            or promoted in current
+            or SequenceMatcher(None, current, promoted).ratio() >= 0.88
+        )
+
+    def schedule_answer(self, question: str, delay: float = 0.45) -> None:
         if self._question_timer:
             self._question_timer.cancel()
         self._question_timer = threading.Timer(delay, self.answer, args=(question,))

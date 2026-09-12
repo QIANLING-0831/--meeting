@@ -79,6 +79,16 @@ def test_stateful_loopback_processor_stabilizes_alternating_weak_speech():
     )
 
 
+def test_loopback_processor_does_not_promote_low_level_device_noise_to_speech():
+    processor = audio.LoopbackAudioProcessor()
+    rng = np.random.default_rng(7)
+    device_noise = rng.normal(0, 0.00035, 4_800).astype(np.float32)
+
+    processed = processor.process(device_noise)
+
+    assert float(np.sqrt(np.mean(np.square(processed)))) < 0.001
+
+
 def test_loopback_reopens_after_windows_invalidates_the_audio_device(monkeypatch):
     stop = Event()
     received = []
@@ -133,3 +143,38 @@ def test_loopback_reopens_after_windows_invalidates_the_audio_device(monkeypatch
     assert received[0][1] == 16_000
     assert "reconnecting" in [status for status, _message in statuses]
     assert statuses[-1][0] == "connected"
+
+
+def test_loopback_records_all_wasapi_channels_then_downmixes(monkeypatch):
+    stop = Event()
+    received = []
+
+    class FakeRecorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def record(self, numframes):
+            left = np.full(numframes, 0.2, dtype=np.float32)
+            right = np.full(numframes, 0.4, dtype=np.float32)
+            return np.column_stack((left, right))
+
+    class FakeDevice:
+        name = "Tencent output"
+
+        def recorder(self, **options):
+            assert "channels" not in options
+            return FakeRecorder()
+
+    monkeypatch.setattr(audio, "_find_device", lambda _name: FakeDevice())
+
+    def on_block(block, rate):
+        received.append((block, rate))
+        stop.set()
+
+    audio.capture_loopback(stop, "Tencent output", 48_000, 0.1, on_block)
+
+    assert received[0][1] == 48_000
+    assert np.allclose(received[0][0], 0.3)

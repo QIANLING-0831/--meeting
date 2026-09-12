@@ -22,10 +22,10 @@ class LoopbackAudioProcessor:
     def __init__(
         self,
         *,
-        silence_rms: float = 0.0003,
-        target_rms: float = 0.04,
-        max_gain: float = 20.0,
-        gain_release: float = 0.7,
+        silence_rms: float = 0.0008,
+        target_rms: float = 0.03,
+        max_gain: float = 10.0,
+        gain_release: float = 0.85,
         peak_limit: float = 0.95,
     ) -> None:
         self.silence_rms = silence_rms
@@ -142,13 +142,23 @@ def capture_loopback(
                 # Resolve the device again on every attempt. Windows invalidates
                 # existing WASAPI handles when a meeting app or output route resets.
                 device = _find_device(device_name)
-                with device.recorder(samplerate=sample_rate, channels=1) as recorder:
+                # SoundCard documents corrupted data on Windows/WASAPI when a
+                # recorder is forced to a single channel. Capture the endpoint's
+                # native channel layout and downmix ourselves instead.
+                with device.recorder(
+                    samplerate=sample_rate,
+                    blocksize=frames * 4,
+                ) as recorder:
                     if on_status:
                         on_status("connected", getattr(device, "name", device_name))
                     while not stop.is_set():
-                        block = recorder.record(numframes=frames)
+                        block = np.asarray(recorder.record(numframes=frames), dtype=np.float32)
                         consecutive_failures = 0
-                        on_block(np.asarray(block[:, 0], dtype=np.float32), sample_rate)
+                        if block.ndim == 1:
+                            mono = block
+                        else:
+                            mono = np.mean(block, axis=1, dtype=np.float32)
+                        on_block(mono, sample_rate)
             except Exception as exc:
                 if stop.is_set():
                     return

@@ -40,6 +40,15 @@ main.setup-collapsed { grid-template-columns: 72px minmax(420px, 1.05fr) minmax(
 .model-controls .hint { grid-column: 1 / -1; margin: 0; }
 .model-controls .answer-option { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .model-controls .answer-option input { width: auto; margin: 0; }
+.realtime-controls { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 8px; align-items: end; margin-bottom: 12px; padding: 10px; border: 1px solid #315542; border-radius: 9px; background: #102019; }
+.realtime-controls label { margin: 0; }
+.realtime-controls select, .realtime-controls input { margin-top: 4px; padding: 8px; }
+.realtime-controls .answer-option { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; }
+.realtime-controls .answer-option input { width: auto; margin: 0; }
+.answer-channel { margin-top: 10px; }
+.channel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; font-size: 12px; }
+.fast-channel .channel-head strong { color: var(--amber); }
+.compact-output { min-height: 150px; border-color: #5a4b29; }
 .microphone-device { width: min(250px, 35vw); margin: 0; padding: 8px; }
 .device-control { min-width: 210px; margin: 0; }
 .loopback-device { margin: 4px 0 0; padding: 8px; }
@@ -52,7 +61,7 @@ dialog::backdrop { background: #000a; backdrop-filter: blur(3px); }
 dialog form { margin: 0; }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .dialog-head h2 { font-size: 17px; }
-#paraformerKeyHint { margin: 0 0 18px; }
+#aliyunKeyHint { margin: 0 0 18px; }
 
 @media (max-width: 1100px) {
   main.setup-collapsed { grid-template-columns: 72px 1fr; }
@@ -61,6 +70,7 @@ dialog form { margin: 0; }
 }
 
 @media (max-width: 720px) {
+  .realtime-controls { grid-template-columns: 1fr; }
   .setup.collapsed { padding: 18px; }
   .setup.collapsed .section-title { justify-content: space-between; }
   .setup.collapsed .section-actions { position: static; margin: 0; }

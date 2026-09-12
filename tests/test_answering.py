@@ -2,6 +2,7 @@ from interview_copilot.answering import InterviewEngine
 from interview_copilot.codex_app_server import CodexAppServerError
 from interview_copilot.config import AppConfig
 from interview_copilot.event_bus import EventBus
+import time
 
 
 def build_engine(tmp_path, include_points):
@@ -102,6 +103,74 @@ def test_auto_answer_schedules_only_the_assembled_question(tmp_path, monkeypatch
     engine.ingest_transcript("interviewer", "哪些？", final=True)
 
     assert scheduled == ["你说一下C++的特性有哪些？"]
+
+
+def test_complete_provisional_question_is_committed_without_waiting_for_cloud_final(
+    tmp_path, monkeypatch
+):
+    engine = build_engine(tmp_path, False)
+    engine.active = True
+    engine.interim_question_stability_seconds = 0.03
+    scheduled = []
+    monkeypatch.setattr(engine, "schedule_answer", scheduled.append)
+
+    engine.ingest_transcript(
+        "interviewer",
+        "一个用户请求发送给大模型后会经历哪些步骤？",
+        final=False,
+    )
+    deadline = time.monotonic() + 0.3
+    while not scheduled and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert scheduled == ["一个用户请求发送给大模型后会经历哪些步骤？"]
+
+
+def test_incomplete_provisional_prompt_is_not_committed(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    engine.active = True
+    engine.interim_question_stability_seconds = 0.02
+    scheduled = []
+    monkeypatch.setattr(engine, "schedule_answer", scheduled.append)
+
+    engine.ingest_transcript("interviewer", "你说一下", final=False)
+    time.sleep(0.08)
+
+    assert scheduled == []
+
+
+def test_newer_provisional_text_replaces_pending_question(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    engine.active = True
+    engine.interim_question_stability_seconds = 0.04
+    scheduled = []
+    monkeypatch.setattr(engine, "schedule_answer", scheduled.append)
+
+    engine.ingest_transcript("interviewer", "为什么选择这个框架？", final=False)
+    time.sleep(0.02)
+    engine.ingest_transcript(
+        "interviewer",
+        "为什么选择这个框架，而不是其他 Agent 框架？",
+        final=False,
+    )
+    time.sleep(0.08)
+
+    assert scheduled == ["为什么选择这个框架，而不是其他 Agent 框架？"]
+
+
+def test_cloud_final_does_not_repeat_a_locally_committed_question(tmp_path, monkeypatch):
+    engine = build_engine(tmp_path, False)
+    engine.active = True
+    engine.interim_question_stability_seconds = 0.02
+    scheduled = []
+    monkeypatch.setattr(engine, "schedule_answer", scheduled.append)
+
+    question = "如何评估这个方案是否保留了关键信息？"
+    engine.ingest_transcript("interviewer", question, final=False)
+    time.sleep(0.06)
+    engine.ingest_transcript("interviewer", question, final=True)
+
+    assert scheduled == [question]
 
 
 def test_answer_reconnects_once_only_when_codex_process_start_times_out(tmp_path, monkeypatch):

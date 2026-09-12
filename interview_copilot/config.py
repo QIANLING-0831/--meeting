@@ -11,6 +11,7 @@ class AppConfig:
     model_size: str = "base"
     paraformer_model: str = "paraformer-realtime-v2"
     paraformer_api_key: str = field(default="", repr=False)
+    aliyun_api_key: str = field(default="", repr=False)
     device_name: str = ""
     sample_rate: int = 48_000
     block_seconds: float = 0.1
@@ -27,6 +28,11 @@ class AppConfig:
     codex_reasoning_effort: str = "low"
     include_core_points: bool = False
     answer_timeout_seconds: float = 10.0
+    qwen_realtime_enabled: bool = True
+    qwen_realtime_model: str = "qwen-audio-3.0-realtime-plus"
+    qwen_realtime_workspace_id: str = ""
+    qwen_realtime_turn_detection: str = "smart_turn"
+    browser_disconnect_grace_seconds: float = 2.0
 
     @classmethod
     def load(cls, root: Path) -> "AppConfig":
@@ -34,6 +40,8 @@ class AppConfig:
         if not path.exists():
             return cls()
         values = json.loads(path.read_text(encoding="utf-8"))
+        if "aliyun_api_key" not in values and values.get("paraformer_api_key"):
+            values["aliyun_api_key"] = values["paraformer_api_key"]
         allowed = cls.__dataclass_fields__.keys()
         return cls(**{key: value for key, value in values.items() if key in allowed})
 

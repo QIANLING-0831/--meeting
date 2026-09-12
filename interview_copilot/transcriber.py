@@ -4,6 +4,7 @@ from collections import deque
 from http import HTTPStatus
 import os
 from pathlib import Path
+import re
 import tempfile
 from threading import Event, Lock
 from typing import Callable, Protocol
@@ -112,7 +113,11 @@ class AliyunParaformerStream:
         from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
 
         dashscope.api_key = resolved_key
-        callback_target = on_text
+        self._on_text = on_text
+        self._latest_provisional = ""
+        self._last_final_text = ""
+        self._text_lock = Lock()
+        owner = self
         recognition_failed = Event()
         pending_frames: deque[bytes] = deque()
         pending_lock = Lock()
@@ -124,16 +129,14 @@ class AliyunParaformerStream:
                 text = sentence.get("text", "").strip()
                 if text:
                     is_final = bool(RecognitionResult.is_sentence_end(sentence))
-                    callback_target(text, is_final)
+                    owner._handle_text(text, is_final)
                     if is_final:
-                        with pending_lock:
-                            pending_frames.clear()
-                            pending_size[0] = 0
+                        owner._clear_pending_audio()
 
             def on_error(self, result: RecognitionResult) -> None:
                 message = getattr(result, "message", "未知错误")
                 recognition_failed.set()
-                callback_target(f"[识别失败] {message}", True)
+                owner._on_text(f"[识别失败] {message}", True)
 
         options = {
             "model": model,
@@ -143,6 +146,7 @@ class AliyunParaformerStream:
             "callback": Callback(),
             "semantic_punctuation_enabled": False,
             "max_sentence_silence": max_sentence_silence_ms,
+            "multi_threshold_mode_enabled": True,
             "punctuation_prediction_enabled": True,
             "heartbeat": True,
         }
@@ -158,6 +162,44 @@ class AliyunParaformerStream:
         self._max_pending_bytes = 20 * 16_000 * 2
         self._started = False
         self._lock = Lock()
+
+    @staticmethod
+    def _comparable_text(text: str) -> str:
+        return re.sub(r"[\s，,。.!！?？；;：:]", "", text).casefold()
+
+    def _handle_text(self, text: str, is_final: bool) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        should_emit = True
+        with self._text_lock:
+            if is_final:
+                if self._comparable_text(clean) == self._comparable_text(self._last_final_text):
+                    should_emit = False
+                else:
+                    self._last_final_text = clean
+                self._latest_provisional = ""
+            else:
+                self._latest_provisional = clean
+        if should_emit:
+            self._on_text(clean, is_final)
+
+    def _clear_pending_audio(self) -> None:
+        with self._pending_lock:
+            self._pending_frames.clear()
+            self._pending_size[0] = 0
+
+    def flush_pending(self) -> bool:
+        """Finalize provisional text when local silence outlasts cloud VAD."""
+        with self._text_lock:
+            text = self._latest_provisional.strip()
+            if not text:
+                return False
+            self._latest_provisional = ""
+            self._last_final_text = text
+        self._clear_pending_audio()
+        self._on_text(text, True)
+        return True
 
     def start(self) -> None:
         with self._lock:

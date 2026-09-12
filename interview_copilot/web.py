@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import queue
 import tempfile
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,12 +13,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .answering import ANSWER_INSTRUCTIONS, InterviewEngine
-from .audio import default_input_device_id, list_input_devices, list_loopback_devices
+from .audio import list_loopback_devices
 from .config import AppConfig
 from .event_bus import EventBus
+from .qwen_only import QwenOnlyEngine
 from .streaming_audio import StreamingAudioCoordinator
-
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = Path(__file__).resolve().parent / "static"
@@ -29,77 +28,100 @@ class FactsPayload(BaseModel):
 
 
 class StartPayload(BaseModel):
-    microphone_enabled: bool = False
-    microphone_device_id: str = ""
     loopback_device_name: str = ""
 
 
-class TranscriptPayload(BaseModel):
-    speaker: str
-    text: str
-    final: bool = True
+class RealtimeSettingsPayload(BaseModel):
+    model: str = "qwen-audio-3.0-realtime-plus"
+    workspace_id: str = ""
+    turn_detection: str = "smart_turn"
 
 
-class QuestionPayload(BaseModel):
-    question: str
-
-
-class ModelPayload(BaseModel):
-    model: str
-    effort: str
-
-
-class AnswerSettingsPayload(BaseModel):
-    include_core_points: bool = False
-
-
-class ParaformerKeyPayload(BaseModel):
+class AliyunKeyPayload(BaseModel):
     api_key: str
     confirm_api_key: str
 
 
 def _mask_api_key(api_key: str) -> str:
     value = api_key.strip()
-    if len(value) < 8:
-        return "****"
-    return f"{value[:3]}****{value[-4:]}"
+    return "****" if len(value) < 8 else f"{value[:3]}****{value[-4:]}"
+
+
+class _BrowserConnectionTracker:
+    """Stop Qwen and audio after the final browser page disconnects."""
+
+    def __init__(self, engine, audio, bus: EventBus, grace_seconds: float) -> None:
+        self.engine, self.audio, self.bus = engine, audio, bus
+        self.grace_seconds = max(0.0, grace_seconds)
+        self._connections = 0
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+
+    def connected(self) -> None:
+        with self._lock:
+            self._connections += 1
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+
+    def disconnected(self) -> None:
+        with self._lock:
+            self._connections = max(0, self._connections - 1)
+            if self._connections or self._timer:
+                return
+            self._timer = threading.Timer(self.grace_seconds, self._stop_if_abandoned)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+
+    def _stop_if_abandoned(self) -> None:
+        with self._lock:
+            self._timer = None
+            if self._connections or not self.engine.active:
+                return
+            self.engine.active = False
+        self.audio.stop()
+        self.bus.publish({"type": "interview_state", "running": False})
 
 
 def create_app(root: Path | None = None) -> FastAPI:
     app_root = (root or ROOT).resolve()
     config = AppConfig.load(app_root)
-    if config.paraformer_api_key.strip():
-        os.environ["DASHSCOPE_API_KEY"] = config.paraformer_api_key.strip()
+    if config.aliyun_api_key.strip():
+        os.environ["DASHSCOPE_API_KEY"] = config.aliyun_api_key.strip()
     bus = EventBus()
-    engine = InterviewEngine(app_root, config, bus)
+    engine = QwenOnlyEngine(app_root, bus)
     latest_session = engine.sessions.latest()
     if latest_session:
         engine.set_session(latest_session)
     audio = StreamingAudioCoordinator(
         config,
-        engine.ingest_transcript,
-        lambda speaker, level: bus.publish(
+        on_audio_level=lambda speaker, level: bus.publish(
             {"type": "audio_level", "speaker": speaker, "level": level}
         ),
-        lambda speaker, status, message: bus.publish(
-            {
-                "type": "audio_status",
-                "speaker": speaker,
-                "status": status,
-                "message": message,
-            }
+        on_audio_status=lambda speaker, status, message: bus.publish(
+            {"type": "audio_status", "speaker": speaker, "status": status, "message": message}
         ),
+        on_fast_event=engine.on_qwen_event,
+    )
+    browser_connections = _BrowserConnectionTracker(
+        engine, audio, bus, config.browser_disconnect_grace_seconds
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
+        browser_connections.close()
         audio.stop()
-        engine.codex.close()
 
-    app = FastAPI(title="Interview Copilot", lifespan=lifespan)
-    app.state.engine = engine
-    app.state.audio = audio
+    app = FastAPI(title="Qwen Realtime Interview Copilot", lifespan=lifespan)
+    app.state.engine, app.state.audio = engine, audio
+    app.state.browser_connections = browser_connections
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/")
@@ -113,45 +135,24 @@ def create_app(root: Path | None = None) -> FastAPI:
             session_data = engine.session.to_dict()
             session_data["jd_text"] = (engine.session.path / "jd.md").read_text(encoding="utf-8")
             session_data["candidate_facts"] = (engine.session.path / "candidate-facts.md").read_text(encoding="utf-8")
+        api_key = os.getenv("DASHSCOPE_API_KEY", "")
         return {
-            "paraformerConfigured": bool(os.getenv("DASHSCOPE_API_KEY")),
-            "paraformerKeyMasked": _mask_api_key(os.getenv("DASHSCOPE_API_KEY", "")),
+            "aliyunConfigured": bool(api_key),
+            "aliyunKeyMasked": _mask_api_key(api_key),
             "running": engine.active,
             "session": session_data,
-            "answerSettings": {"includeCorePoints": config.include_core_points},
             "answerSnapshot": engine.answer_snapshot(),
+            "realtimeSettings": {
+                "model": config.qwen_realtime_model,
+                "workspaceId": config.qwen_realtime_workspace_id,
+                "turnDetection": config.qwen_realtime_turn_detection,
+            },
             "loopbackDevices": [item.__dict__ for item in list_loopback_devices()],
             "selectedLoopbackDeviceName": config.device_name,
-            "microphoneDevices": [item.__dict__ for item in list_input_devices()],
-            "defaultMicrophoneDeviceId": default_input_device_id(),
-            "selectedMicrophoneDeviceId": config.microphone_name,
         }
 
-    @app.get("/api/knowledge/packs")
-    def packs():
-        return {"packs": engine.knowledge.list_packs()}
-
-    @app.post("/api/knowledge/reindex")
-    def reindex():
-        result = engine.knowledge.rebuild()
-        bus.publish({"type": "notice", "message": f"知识库索引完成：{result['files']} 个文件，{result['chunks']} 个片段"})
-        return result
-
     @app.post("/api/session/prepare")
-    async def prepare_session(
-        company: str = Form(""),
-        position: str = Form(""),
-        jd_text: str = Form(""),
-        knowledge_packs: str = Form("[]"),
-        resume: UploadFile | None = File(None),
-    ):
-        try:
-            selected = json.loads(knowledge_packs)
-            if not isinstance(selected, list):
-                raise ValueError
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(400, "知识库选择格式错误") from exc
-
+    async def prepare_session(company: str = Form(""), position: str = Form(""), jd_text: str = Form(""), resume: UploadFile | None = File(None)):
         temp_path: Path | None = None
         try:
             if resume and resume.filename:
@@ -161,13 +162,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
                     handle.write(await resume.read())
                     temp_path = Path(handle.name)
-            session, facts = engine.sessions.create(
-                company=company,
-                position=position,
-                jd_text=jd_text,
-                resume_path=temp_path,
-                knowledge_packs=[str(item) for item in selected],
-            )
+            session, facts = engine.sessions.create(company=company, position=position, jd_text=jd_text, resume_path=temp_path, knowledge_packs=[])
             engine.set_session(session)
             bus.publish({"type": "session_ready", "session": session.to_dict()})
             return {"session": session.to_dict(), "candidateFacts": facts}
@@ -187,26 +182,20 @@ def create_app(root: Path | None = None) -> FastAPI:
         if not engine.session:
             raise HTTPException(400, "请先准备本次面试")
         if not os.getenv("DASHSCOPE_API_KEY"):
-            raise HTTPException(400, "未检测到 DASHSCOPE_API_KEY")
-        loopback_devices = list_loopback_devices()
-        selected_loopback = payload.loopback_device_name.strip() or config.device_name
-        if selected_loopback and selected_loopback not in {item.name for item in loopback_devices}:
+            raise HTTPException(400, "请先配置阿里云百炼 API Key")
+        devices = list_loopback_devices()
+        selected = payload.loopback_device_name.strip() or config.device_name
+        if selected and selected not in {item.name for item in devices}:
             raise HTTPException(400, "选择的系统声音设备已不存在，请重新选择")
         try:
-            audio.start(
-                payload.microphone_enabled,
-                payload.microphone_device_id,
-                selected_loopback,
-            )
-            if selected_loopback:
-                config.device_name = selected_loopback
-            if payload.microphone_enabled and payload.microphone_device_id:
-                config.microphone_name = payload.microphone_device_id
-            if selected_loopback or (payload.microphone_enabled and payload.microphone_device_id):
-                config.save(app_root)
+            audio.start(loopback_device_name=selected, fast_instructions=engine.instructions())
         except Exception as exc:
-            raise HTTPException(500, f"音频启动失败：{exc}") from exc
+            audio.stop()
+            raise HTTPException(500, f"Qwen 实时通道启动失败：{exc}") from exc
         engine.active = True
+        if selected:
+            config.device_name = selected
+            config.save(app_root)
         bus.publish({"type": "interview_state", "running": True})
         return {"ok": True}
 
@@ -217,125 +206,61 @@ def create_app(root: Path | None = None) -> FastAPI:
         bus.publish({"type": "interview_state", "running": False})
         return {"ok": True}
 
-    @app.post("/api/transcript/simulate")
-    def simulate_transcript(payload: TranscriptPayload):
-        if payload.speaker not in {"interviewer", "candidate"}:
-            raise HTTPException(400, "speaker 必须是 interviewer 或 candidate")
-        engine.ingest_transcript(payload.speaker, payload.text, payload.final)
-        return {"ok": True}
-
-    @app.post("/api/questions/answer")
-    def answer(payload: QuestionPayload):
-        if not payload.question.strip():
-            raise HTTPException(400, "问题不能为空")
-        engine.answer(payload.question)
-        return {"ok": True}
-
-    @app.post("/api/questions/interrupt")
-    def interrupt():
-        try:
-            engine.codex.interrupt()
-        except Exception as exc:
-            raise HTTPException(500, str(exc)) from exc
-        return {"ok": True}
-
-    @app.get("/api/codex/account")
-    def codex_account():
-        try:
-            return engine.codex.account()
-        except Exception as exc:
-            raise HTTPException(503, f"Codex 状态读取失败：{exc}") from exc
-
-    @app.get("/api/codex/models")
-    def codex_models():
-        try:
-            return {
-                "models": engine.codex.models(),
-                "selectedModel": config.codex_model,
-                "selectedEffort": config.codex_reasoning_effort,
-            }
-        except Exception as exc:
-            raise HTTPException(503, f"Codex 模型读取失败：{exc}") from exc
-
-    @app.post("/api/codex/warmup")
-    def codex_warmup():
-        try:
-            engine.codex.ensure_thread(
-                model=config.codex_model,
-                instructions=ANSWER_INSTRUCTIONS,
-            )
-            return {"ready": True}
-        except Exception as exc:
-            raise HTTPException(503, f"Codex 预热失败：{exc}") from exc
-
-    @app.post("/api/settings/model")
-    def select_model(payload: ModelPayload):
-        try:
-            models = engine.codex.models()
-        except Exception as exc:
-            raise HTTPException(503, f"Codex 模型读取失败：{exc}") from exc
-        selected = next((item for item in models if item.get("model") == payload.model), None)
-        if not selected:
-            raise HTTPException(400, "该模型不在当前 Codex 账户的可用列表中")
-        efforts = {
-            item.get("reasoningEffort")
-            for item in selected.get("supportedReasoningEfforts", [])
-        }
-        if payload.effort not in efforts:
-            raise HTTPException(400, "该模型不支持所选推理强度")
-        config.codex_model = payload.model
-        config.codex_reasoning_effort = payload.effort
-        config.save(app_root)
-        bus.publish({"type": "notice", "message": "回答模型已更新，从下一题开始生效"})
-        return {"model": payload.model, "effort": payload.effort}
-
-    @app.post("/api/settings/answer")
-    def select_answer_settings(payload: AnswerSettingsPayload):
-        config.include_core_points = payload.include_core_points
-        config.save(app_root)
-        return {"includeCorePoints": config.include_core_points}
-
-    @app.post("/api/settings/paraformer-key")
-    def save_paraformer_key(payload: ParaformerKeyPayload):
+    @app.post("/api/settings/realtime")
+    def select_realtime_settings(payload: RealtimeSettingsPayload):
         if engine.active:
-            raise HTTPException(409, "请先停止实时识别，再修改 Paraformer API Key")
+            raise HTTPException(409, "请先停止实时会话，再修改 Qwen 设置")
+        if payload.model not in {"qwen-audio-3.0-realtime-flash", "qwen-audio-3.0-realtime-plus"}:
+            raise HTTPException(400, "不支持的 Qwen 实时模型")
+        if payload.turn_detection not in {"smart_turn", "server_vad"}:
+            raise HTTPException(400, "不支持的轮次检测方式")
+        workspace_id = payload.workspace_id.strip()
+        if workspace_id and not all(char.isalnum() or char in "-_" for char in workspace_id):
+            raise HTTPException(400, "业务空间 ID 格式不正确")
+        config.qwen_realtime_enabled = True
+        config.qwen_realtime_model = payload.model
+        config.qwen_realtime_workspace_id = workspace_id
+        config.qwen_realtime_turn_detection = payload.turn_detection
+        config.save(app_root)
+        return {"model": config.qwen_realtime_model, "workspaceId": workspace_id, "turnDetection": config.qwen_realtime_turn_detection}
+
+    @app.post("/api/settings/aliyun-key")
+    def save_aliyun_key(payload: AliyunKeyPayload):
+        if engine.active:
+            raise HTTPException(409, "请先停止实时会话，再修改 API Key")
         api_key = payload.api_key.strip()
         if len(api_key) < 8:
             raise HTTPException(400, "API Key 格式过短，请检查后重新输入")
         if api_key != payload.confirm_api_key.strip():
             raise HTTPException(400, "两次输入的 API Key 不一致")
-        config.paraformer_api_key = api_key
+        config.aliyun_api_key = api_key
         config.save(app_root)
         os.environ["DASHSCOPE_API_KEY"] = api_key
         masked = _mask_api_key(api_key)
-        bus.publish({"type": "paraformer_key_updated", "masked": masked})
+        bus.publish({"type": "aliyun_key_updated", "masked": masked})
         return {"configured": True, "masked": masked}
-
-    @app.post("/api/codex/login")
-    def codex_login():
-        try:
-            return engine.codex.begin_chatgpt_login()
-        except Exception as exc:
-            raise HTTPException(503, f"无法开始 Codex 登录：{exc}") from exc
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()
+        browser_connections.connected()
         events = bus.subscribe()
         try:
             while True:
                 try:
-                    await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                    await asyncio.wait_for(websocket.receive_text(), timeout=0.05)
                 except TimeoutError:
                     pass
-                try:
-                    event = events.get_nowait()
-                except queue.Empty:
-                    continue
-                await websocket.send_json(event)
+                while True:
+                    try:
+                        event = events.get_nowait()
+                    except queue.Empty:
+                        break
+                    await websocket.send_json(event)
         except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
             pass
         finally:
             bus.unsubscribe(events)
+            browser_connections.disconnected()
 
     return app

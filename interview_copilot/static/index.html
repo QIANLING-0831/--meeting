@@ -3,73 +3,60 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Interview Copilot</title>
+  <title>Qwen Realtime Interview Copilot</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/enhancements.css">
 </head>
 <body>
   <header>
-    <div><span class="eyebrow">LOCAL INTERVIEW WORKSPACE</span><h1>Interview Copilot</h1></div>
-    <div class="status-row"><span id="paraformerStatus" class="pill">Paraformer 检查中</span><button id="paraformerKeyButton" class="ghost">配置 Paraformer</button><span id="codexStatus" class="pill">Codex 检查中</span><button id="loginButton" class="ghost">登录 Codex</button></div>
+    <div><span class="eyebrow">QWEN-ONLY REALTIME</span><h1>Interview Copilot</h1></div>
+    <div class="status-row"><span id="aliyunStatus" class="pill">阿里云检查中</span><button id="aliyunKeyButton" class="ghost">配置 API Key</button></div>
   </header>
-
   <main>
-    <section id="setupPanel" class="setup card">
-      <div class="section-title"><div><span class="step">01</span><h2>本次面试</h2></div><div class="section-actions"><span id="sessionBadge" class="muted">尚未准备</span><button id="setupToggle" class="ghost compact" aria-expanded="true">收起</button></div></div>
-      <div id="setupBody" class="setup-body">
+    <section class="setup card">
+      <div class="section-title"><div><span class="step">01</span><h2>面试资料</h2></div><span id="sessionBadge" class="muted">尚未准备</span></div>
       <div class="two-col"><label>公司<input id="company" placeholder="例如：某科技公司"></label><label>岗位<input id="position" placeholder="例如：Agent 应用开发"></label></div>
-      <label>岗位 JD<textarea id="jd" rows="5" placeholder="粘贴本次岗位描述；它只在本地保存。"></textarea></label>
+      <label>岗位 JD<textarea id="jd" rows="5" placeholder="粘贴本次岗位描述"></textarea></label>
       <label class="file-label">简历（PDF / MD / TXT）<input id="resume" type="file" accept=".pdf,.md,.txt"></label>
-      <div class="packs-head"><span>知识库组合</span><button id="reindexButton" class="text-button">重建索引</button></div>
-      <div id="packs" class="packs"><span class="muted">正在读取…</span></div>
       <button id="prepareButton" class="primary wide">生成本次面试工作区</button>
-      <label id="factsWrap" class="hidden">已提取的候选人事实（确认后才参与回答）<textarea id="facts" rows="8"></textarea></label>
-      <button id="saveFactsButton" class="secondary wide hidden">确认并保存候选人事实</button>
-      </div>
+      <label id="factsWrap" class="hidden">候选人事实与项目描述（请核对、补充后保存）<textarea id="facts" rows="9"></textarea></label>
+      <button id="saveFactsButton" class="secondary wide hidden">保存候选人事实</button>
     </section>
 
     <section class="live card">
       <div class="section-title"><div><span class="step">02</span><h2>实时会话</h2></div><span id="liveBadge" class="live-dot">未开始</span></div>
       <div class="controls">
-        <label class="device-control">系统声音<select id="loopbackDevice" class="loopback-device" aria-label="选择系统声音设备"></select></label>
-        <label class="switch"><input id="microphone" type="checkbox"><span></span>同时识别我的麦克风</label>
-        <select id="microphoneDevice" class="microphone-device hidden" aria-label="选择麦克风"></select>
+        <label class="device-control">系统声音<select id="loopbackDevice" class="loopback-device"></select></label>
         <button id="startButton" class="primary">开始</button><button id="stopButton" class="danger" disabled>停止</button>
       </div>
-      <div class="audio-levels">
-        <label>系统声 <meter id="interviewerLevel" min="0" max="1" value="0"></meter><span id="interviewerLevelText">未检测</span></label>
-        <label id="candidateLevelWrap" class="hidden">麦克风 <meter id="candidateLevel" min="0" max="1" value="0"></meter><span id="candidateLevelText">未检测</span></label>
-      </div>
-      <div id="transcript" class="transcript"><div class="empty">系统声音会标为“面试官”，麦克风会标为“我”。</div></div>
-      <div class="transcript-selection">
-        <span id="selectionHint" class="hint">可点击面试官转写，手动选择问题片段</span>
-        <button id="setQuestionButton" class="secondary compact" disabled>设为当前问题</button>
-        <button id="clearSelectionButton" class="ghost compact" disabled>清除选择</button>
-      </div>
-      <div class="manual-box"><select id="manualSpeaker"><option value="interviewer">面试官</option><option value="candidate">我</option></select><input id="manualText" placeholder="可输入一句话测试，无需开启音频"><button id="sendTextButton" class="secondary">加入记录</button></div>
-      <p class="hint">F8：回答当前问题（手动选择优先）　Esc：打断当前生成</p>
+      <div class="audio-levels"><label>系统声 <meter id="interviewerLevel" min="0" max="1" value="0"></meter><span id="interviewerLevelText">未检测</span></label></div>
+      <div id="transcript" class="transcript"><div class="empty">Qwen 会直接转写面试官的系统声音。</div></div>
+      <p class="hint">关闭最后一个浏览器页面后，录音与 Qwen 连接会自动停止。</p>
     </section>
 
     <section class="answer card">
-      <div class="section-title"><div><span class="step">03</span><h2>回答辅助</h2></div><span id="answerState" class="muted">等待问题</span></div>
-      <div class="model-controls"><label>回答模型<select id="modelSelect"><option>正在读取…</option></select></label><label>推理强度<select id="effortSelect"></select></label><label class="answer-option"><input id="includePoints" type="checkbox">同时生成核心要点</label><span id="modelHint" class="hint">默认只生成30～45秒口述回答</span></div>
-      <div id="questionBox" class="question-box">识别到问题后，本地资料要点会先出现。</div>
-      <div id="knowledgeHits" class="knowledge-hits"></div>
-      <article id="answerOutput" class="answer-output"><div class="empty">Codex 的精炼回答将在这里流式显示。</div></article>
-      <div class="answer-actions"><button id="answerButton" class="primary">回答当前问题</button><button id="interruptButton" class="ghost">打断</button></div>
+      <div class="section-title"><div><span class="step">03</span><h2>Qwen 回答</h2></div><span id="answerState" class="muted">等待音频</span></div>
+      <div class="realtime-controls">
+        <label>模型<select id="realtimeModel"><option value="qwen-audio-3.0-realtime-plus">Qwen Audio Realtime Plus</option><option value="qwen-audio-3.0-realtime-flash">Qwen Audio Realtime Flash</option></select></label>
+        <label>轮次检测<select id="turnDetection"><option value="smart_turn">Smart Turn</option><option value="server_vad">Server VAD</option></select></label>
+        <label>百炼业务空间 ID（推荐）<input id="workspaceId" placeholder="留空使用兼容域名"></label>
+        <button id="saveRealtimeButton" class="secondary compact">保存设置</button>
+      </div>
+      <div id="questionBox" class="question-box">识别到完整问题后会显示在这里。</div>
+      <article id="answerOutput" class="answer-output"><div class="empty">系统音频直接进入 Qwen，由一个实时通道完成转写和回答。</div></article>
     </section>
   </main>
-  <dialog id="paraformerKeyDialog">
-    <form id="paraformerKeyForm">
-      <div class="dialog-head"><h2>Paraformer API Key</h2><button id="paraformerKeyCancel" type="button" class="ghost compact">取消</button></div>
-      <p id="paraformerKeyHint" class="hint">完整 Key 不会在页面中回显。</p>
-      <label>输入 API Key<input id="paraformerKey" type="password" autocomplete="new-password" required minlength="8" placeholder="例如：sk-…"></label>
-      <label>再次输入确认<input id="paraformerKeyConfirm" type="password" autocomplete="new-password" required minlength="8" placeholder="再次输入相同的 Key"></label>
-      <button type="submit" class="primary wide">确认并设为本机默认</button>
+
+  <dialog id="aliyunKeyDialog">
+    <form id="aliyunKeyForm">
+      <div class="dialog-head"><h2>阿里云百炼 API Key</h2><button id="aliyunKeyCancel" type="button" class="ghost compact">取消</button></div>
+      <p id="aliyunKeyHint" class="hint">完整 Key 不会在页面中回显。</p>
+      <label>输入 API Key<input id="aliyunKey" type="password" autocomplete="new-password" required minlength="8"></label>
+      <label>再次确认<input id="aliyunKeyConfirm" type="password" autocomplete="new-password" required minlength="8"></label>
+      <button type="submit" class="primary wide">保存到本机</button>
     </form>
   </dialog>
   <div id="toast" role="status"></div>
-  <script src="/static/transcript_state.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

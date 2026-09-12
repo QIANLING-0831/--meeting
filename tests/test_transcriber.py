@@ -156,6 +156,52 @@ class AliyunParaformerTest(unittest.TestCase):
         self.assertFalse(stream._started)
         recognition.stop.assert_called_once_with()
 
+    def test_stream_can_finalize_latest_provisional_after_local_silence(self):
+        from interview_copilot.transcriber import AliyunParaformerStream
+
+        emitted = []
+        stream = AliyunParaformerStream.__new__(AliyunParaformerStream)
+        stream._on_text = lambda text, final: emitted.append((text, final))
+        stream._latest_provisional = "请说一下 C++ 有哪些特性"
+        stream._last_final_text = ""
+        stream._text_lock = Lock()
+        stream._pending_frames = []
+        stream._pending_lock = Lock()
+        stream._pending_size = [0]
+
+        self.assertTrue(stream.flush_pending())
+        self.assertEqual(emitted, [("请说一下 C++ 有哪些特性", True)])
+        self.assertFalse(stream.flush_pending())
+
+        stream._handle_text("请说一下 C++ 有哪些特性。", True)
+        self.assertEqual(emitted, [("请说一下 C++ 有哪些特性", True)])
+
+    def test_realtime_v2_enables_multi_threshold_segmentation(self):
+        from unittest.mock import patch
+
+        from interview_copilot.transcriber import AliyunParaformerStream
+
+        recognition_class = Mock()
+        fake_dashscope = types.ModuleType("dashscope")
+        fake_audio = types.ModuleType("dashscope.audio")
+        fake_asr = types.ModuleType("dashscope.audio.asr")
+        fake_asr.Recognition = recognition_class
+        fake_asr.RecognitionCallback = object
+        fake_asr.RecognitionResult = Mock()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "dashscope": fake_dashscope,
+                "dashscope.audio": fake_audio,
+                "dashscope.audio.asr": fake_asr,
+            },
+        ):
+            AliyunParaformerStream(lambda _text, _final: None, api_key="test-key")
+
+        options = recognition_class.call_args.kwargs
+        self.assertTrue(options["multi_threshold_mode_enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()
