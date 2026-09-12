@@ -32,7 +32,7 @@ class StartPayload(BaseModel):
 
 
 class RealtimeSettingsPayload(BaseModel):
-    pipeline_mode: str = "dual"
+    pipeline_mode: str = "realtime"
     model: str = "qwen-audio-3.0-realtime-plus"
     answer_model: str = "qwen-plus"
     workspace_id: str = ""

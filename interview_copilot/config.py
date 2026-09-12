@@ -32,7 +32,7 @@ class AppConfig:
     qwen_realtime_model: str = "qwen-audio-3.0-realtime-plus"
     qwen_realtime_workspace_id: str = ""
     qwen_realtime_turn_detection: str = "server_vad"
-    qwen_pipeline_mode: str = "dual"
+    qwen_pipeline_mode: str = "realtime"
     qwen_asr_model: str = "qwen-audio-3.0-asr-flash-streaming"
     qwen_answer_model: str = "qwen-plus"
     browser_disconnect_grace_seconds: float = 2.0

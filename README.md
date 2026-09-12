@@ -1,16 +1,16 @@
 # Qwen Realtime Interview Copilot
 
-这个分支默认使用阿里云双模型链路：Windows 系统声音交给专用 Qwen 流式 ASR，完整问题随后交给 Qwen Plus 流式回答。运行链路不启动 Paraformer，也不调用 Codex；页面仍保留 Qwen-Audio Realtime 单模型作为备用模式。
+这个分支默认使用 Qwen-Audio Realtime Plus 单模型链路。运行链路不启动 Paraformer，也不调用 Codex；页面同时保留“专用 Qwen 流式 ASR → Qwen Plus”的实验模式。
 
 > 使用前请取得面试参与者同意，并遵守当地法律、公司政策和面试规则。程序不保存原始音频，只在本机保存文字记录。
 
 ## 数据链路
 
 ```text
-会议系统声音 → Qwen Audio ASR（上下文 + 热词）→ Qwen Plus → 浏览器
+会议系统声音 → Qwen-Audio Realtime Plus → 浏览器
 ```
 
-专用 ASR 返回的输入转写直接显示在左侧，识别到完整句后立即触发回答，因此不会再出现 Paraformer 与 Qwen 两套独立话轮进度不一致的问题。简历、JD 和项目描述中的技术词会作为识别上下文与热词发送。浏览器 WebSocket 会一次排空已经到达的事件，避免按固定速率逐条发送造成积压。
+Qwen 返回的输入转写直接显示在左侧，因此不会再出现 Paraformer 与 Qwen 两套独立话轮进度不一致的问题。实验双模型模式会把简历、JD 和项目描述中的技术词作为识别上下文与热词发送。浏览器 WebSocket 会一次排空已经到达的事件，避免按固定速率逐条发送造成积压。
 
 ## 面试资料
 
@@ -48,9 +48,10 @@ Key 保存在被 Git 忽略的本机 `config.json`，页面只回显脱敏值。
 
 ## Qwen 设置
 
-- `双模型`：默认模式，`qwen-audio-3.0-asr-flash-streaming → qwen-plus`，优先保证腾讯会议转写完整度和专业词识别。
+- `单模型`：默认模式，使用 `qwen-audio-3.0-realtime-plus` 直接听音频并回答。
+- `双模型`：实验模式，`qwen-audio-3.0-asr-flash-streaming → qwen-plus`，可测试专业词热词增强。
 - `Qwen Flash`：双模型模式下可作为更快的回答模型切换。
-- `单模型`：备用模式，使用 `qwen-audio-3.0-realtime-plus` 或 `qwen-audio-3.0-realtime-flash` 直接听音频并回答。
+- `Qwen Audio Realtime Flash`：单模型模式下可切换，用于对比响应速度。
 - `Server VAD`：本分支默认使用低灵敏度阈值 `0.2` 和 900ms 停顿，优先保证腾讯会议中的弱音与长句不丢失。
 - `Smart Turn`：仍可手动选择；它会过滤被判定为无效语义的片段，不建议作为会议转写的默认模式。
 - 百炼业务空间 ID：填写后使用业务空间专属北京地域名；留空使用兼容域名。

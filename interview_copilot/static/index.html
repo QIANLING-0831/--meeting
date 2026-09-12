@@ -38,7 +38,7 @@
     <section class="answer card">
       <div class="section-title"><div><span class="step">03</span><h2>Qwen 回答</h2></div><span id="answerState" class="muted">等待音频</span></div>
       <div class="realtime-controls">
-        <label>处理模式<select id="pipelineMode"><option value="dual">双模型（推荐：专用 ASR → 回答）</option><option value="realtime">单模型（Audio Realtime）</option></select></label>
+        <label>处理模式<select id="pipelineMode"><option value="realtime">单模型（推荐：Audio Realtime）</option><option value="dual">双模型（实验：专用 ASR → 回答）</option></select></label>
         <label>回答模型<select id="answerModel"><option value="qwen-plus">Qwen Plus（推荐）</option><option value="qwen-flash">Qwen Flash（更快）</option></select></label>
         <label>单模型备用<select id="realtimeModel"><option value="qwen-audio-3.0-realtime-plus">Qwen Audio Realtime Plus</option><option value="qwen-audio-3.0-realtime-flash">Qwen Audio Realtime Flash</option></select></label>
         <label>单模型轮次检测<select id="turnDetection"><option value="server_vad">Server VAD</option><option value="smart_turn">Smart Turn</option></select></label>
