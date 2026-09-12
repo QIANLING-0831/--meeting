@@ -94,6 +94,15 @@ class SessionManager:
         path = self._safe_session_path(session_id) / "candidate-facts.md"
         path.write_text(text.strip(), encoding="utf-8")
 
+    def update_knowledge_packs(
+        self, session: InterviewSession, knowledge_packs: list[str]
+    ) -> None:
+        session.knowledge_packs = list(dict.fromkeys(knowledge_packs))
+        path = self._safe_session_path(session.id) / "session.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["knowledge_packs"] = session.knowledge_packs
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def external_sources(self, session_id: str) -> list[dict]:
         path = self._safe_session_path(session_id) / "external-sources.json"
         if not path.exists():

@@ -45,6 +45,48 @@ def test_system_audio_is_sent_only_to_qwen(monkeypatch):
     assert coordinator.channels == []
 
 
+def test_realtime_question_refreshes_model_neutral_context(monkeypatch):
+    instances = []
+
+    class FakeQwen:
+        def __init__(self, on_event, **_options):
+            self.on_event = on_event
+            self.updated = []
+            instances.append(self)
+
+        def start(self):
+            self.on_event(
+                {"type": "fast_question_transcript", "text": "Agent 工作流程是什么？"}
+            )
+
+        def send(self, _block, _sample_rate):
+            return None
+
+        def update_instructions(self, value):
+            self.updated.append(value)
+
+        def stop(self):
+            return None
+
+    def fake_capture(stop, *_args, **_kwargs):
+        stop.set()
+
+    questions = []
+    monkeypatch.setattr(streaming_audio, "AliyunRealtimeAnswerStream", FakeQwen)
+    monkeypatch.setattr(streaming_audio, "capture_loopback", fake_capture)
+    coordinator = streaming_audio.StreamingAudioCoordinator(
+        AppConfig(qwen_pipeline_mode="realtime"),
+        on_fast_event=lambda event: questions.append(event.get("text", "")),
+        instructions_provider=lambda question: f"检索上下文：{question}",
+    )
+
+    coordinator.start()
+    coordinator.stop()
+
+    assert questions == ["Agent 工作流程是什么？"]
+    assert instances[0].updated == ["检索上下文：Agent 工作流程是什么？"]
+
+
 def test_dual_mode_sends_system_audio_to_dedicated_asr(monkeypatch):
     sent = []
 
@@ -134,7 +176,7 @@ def test_microphone_uses_separate_asr_and_only_updates_candidate_context(monkeyp
         AppConfig(qwen_pipeline_mode="realtime"),
         on_text=lambda speaker, text, final: texts.append((speaker, text, final)),
         on_fast_event=lambda _event: None,
-        instructions_provider=lambda: "包含候选人最新回答的提示词",
+        instructions_provider=lambda _question: "包含候选人最新回答的提示词",
     )
 
     coordinator.start(microphone_enabled=True, microphone_device_id="7")

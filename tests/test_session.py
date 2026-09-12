@@ -41,3 +41,15 @@ def test_latest_restores_saved_session(tmp_path):
     assert restored is not None
     assert restored.id == created.id
     assert restored.knowledge_packs == ["agent"]
+
+
+def test_knowledge_pack_selection_is_persisted(tmp_path):
+    manager = SessionManager(tmp_path / "sessions")
+    session, _ = manager.create(
+        company="测试", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+
+    manager.update_knowledge_packs(session, ["agent", "agent"])
+
+    assert session.knowledge_packs == ["agent"]
+    assert manager.latest().knowledge_packs == ["agent"]

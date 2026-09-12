@@ -28,7 +28,7 @@ class StreamingAudioCoordinator:
         on_audio_level: Callable[[Speaker, float], None] | None = None,
         on_audio_status: Callable[[Speaker, str, str], None] | None = None,
         on_fast_event: Callable[[dict], None] | None = None,
-        instructions_provider: Callable[[], str] | None = None,
+        instructions_provider: Callable[[str], str] | None = None,
     ) -> None:
         self.config = config
         self.on_text = on_text
@@ -76,7 +76,7 @@ class StreamingAudioCoordinator:
             self.asr_stream.start()
         else:
             self.fast_stream = AliyunRealtimeAnswerStream(
-                self.on_fast_event,
+                self._on_realtime_event,
                 model=self.config.qwen_realtime_model,
                 workspace_id=self.config.qwen_realtime_workspace_id,
                 turn_detection=self.config.qwen_realtime_turn_detection,
@@ -103,7 +103,21 @@ class StreamingAudioCoordinator:
         if self.on_text:
             self.on_text("candidate", text, final)
         if final and self.fast_stream and self.instructions_provider:
-            self.fast_stream.update_instructions(self.instructions_provider())
+            self.fast_stream.update_instructions(self.instructions_provider(""))
+
+    def _on_realtime_event(self, event: dict) -> None:
+        if self.on_fast_event:
+            self.on_fast_event(event)
+        if (
+            event.get("type") == "fast_question_transcript"
+            and self.fast_stream
+            and self.instructions_provider
+        ):
+            question = str(event.get("text", "")).strip()
+            if question:
+                # Local FTS retrieval is fast enough to refresh the session
+                # instructions before the following response events arrive.
+                self.fast_stream.update_instructions(self.instructions_provider(question))
 
     def stop(self) -> None:
         self.stop_event.set()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import queue
 import tempfile
@@ -31,6 +32,10 @@ class FactsPayload(BaseModel):
 class ExternalSourcePayload(BaseModel):
     url: str
     label: str = ""
+
+
+class KnowledgePacksPayload(BaseModel):
+    packs: list[str]
 
 
 class StartPayload(BaseModel):
@@ -183,10 +188,20 @@ def create_app(root: Path | None = None) -> FastAPI:
             "microphoneDevices": [item.__dict__ for item in list_input_devices()],
             "selectedMicrophoneDeviceId": config.microphone_name or default_input_device_id(),
             "microphoneEnabled": config.microphone_enabled,
+            "localKnowledge": {
+                "packs": engine.context_provider.available_packs(),
+                "enabled": bool(engine.context_provider.available_packs()),
+            },
         }
 
     @app.post("/api/session/prepare")
-    async def prepare_session(company: str = Form(""), position: str = Form(""), jd_text: str = Form(""), resume: UploadFile | None = File(None)):
+    async def prepare_session(
+        company: str = Form(""),
+        position: str = Form(""),
+        jd_text: str = Form(""),
+        knowledge_packs: str = Form("[]"),
+        resume: UploadFile | None = File(None),
+    ):
         temp_path: Path | None = None
         try:
             if resume and resume.filename:
@@ -196,7 +211,23 @@ def create_app(root: Path | None = None) -> FastAPI:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
                     handle.write(await resume.read())
                     temp_path = Path(handle.name)
-            session, facts = engine.sessions.create(company=company, position=position, jd_text=jd_text, resume_path=temp_path, knowledge_packs=[])
+            try:
+                requested_packs = json.loads(knowledge_packs)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(400, "知识库选择格式不正确") from exc
+            available_packs = set(engine.context_provider.available_packs())
+            if not isinstance(requested_packs, list) or any(
+                not isinstance(item, str) or item not in available_packs
+                for item in requested_packs
+            ):
+                raise HTTPException(400, "包含不存在的本地知识库")
+            session, facts = engine.sessions.create(
+                company=company,
+                position=position,
+                jd_text=jd_text,
+                resume_path=temp_path,
+                knowledge_packs=requested_packs,
+            )
             engine.set_session(session)
             bus.publish({"type": "session_ready", "session": session.to_dict()})
             return {"session": session.to_dict(), "candidateFacts": facts}
@@ -210,6 +241,16 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise HTTPException(404, "当前会话不存在")
         engine.sessions.update_candidate_facts(session_id, payload.text)
         return {"ok": True}
+
+    @app.post("/api/session/{session_id}/knowledge-packs")
+    def update_knowledge_packs(session_id: str, payload: KnowledgePacksPayload):
+        if not engine.session or engine.session.id != session_id:
+            raise HTTPException(404, "当前会话不存在")
+        available = set(engine.context_provider.available_packs())
+        if any(pack not in available for pack in payload.packs):
+            raise HTTPException(400, "包含不存在的本地知识库")
+        engine.sessions.update_knowledge_packs(engine.session, payload.packs)
+        return {"packs": engine.session.knowledge_packs, "requiresRestart": engine.active}
 
     @app.post("/api/session/{session_id}/external-sources")
     def add_external_source(session_id: str, payload: ExternalSourcePayload):

@@ -5,6 +5,7 @@ from collections import deque
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from .answer_context import AnswerContextProvider
 from .event_bus import EventBus
 from .models import TranscriptEntry
 from .qwen_dual import QwenTextAnswerer, extract_hotwords
@@ -37,6 +38,7 @@ class QwenOnlyEngine:
         # only a safety bound for prompt size during a long interview.
         self._topic_questions: deque[str] = deque(maxlen=10)
         self._candidate_answers: deque[str] = deque(maxlen=8)
+        self.context_provider = AnswerContextProvider(root / "workspace", self.sessions)
         self.text_answerer = QwenTextAnswerer(
             self.on_qwen_event, answer_model, workspace_id=workspace_id
         )
@@ -55,13 +57,28 @@ class QwenOnlyEngine:
                 "candidateAnswers": list(self._candidate_answers),
             }
 
-    def instructions(self) -> str:
+    def instructions(self, question: str = "") -> str:
         if not self.session:
             return ""
-        jd = (self.session.path / "jd.md").read_text(encoding="utf-8").strip()
-        facts = (self.session.path / "candidate-facts.md").read_text(encoding="utf-8").strip()
-        external = self.sessions.external_knowledge(self.session.id)
-        topic_context = self._topic_context()
+        with self._lock:
+            resolved_question = question.strip() or self._question
+            topic_questions = list(self._topic_questions)
+            candidate_answers = list(self._candidate_answers)
+        context = self.context_provider.build(
+            self.session,
+            question=resolved_question,
+            topic_questions=topic_questions,
+            candidate_answers=candidate_answers,
+        )
+        if context.knowledge_hits:
+            self.bus.publish(
+                {
+                    "type": "knowledge_hits",
+                    "question": resolved_question,
+                    "hits": [hit.to_dict() for hit in context.knowledge_hits],
+                    "packs": list(context.knowledge_packs),
+                }
+            )
         return f"""你是候选人的实时面试回答助手。请根据面试官的问题，用中文输出候选人可以马上口述的回答。
 
 规则：
@@ -74,35 +91,9 @@ class QwenOnlyEngine:
 7. 当前话轮若是追问、指代或被打断后的补充，结合“当前追问链”和候选人刚才的回答还原真实意图；只有面试官明确切换话题时才切换主题。
 8. 候选人回答仅用于判断面试官后续追问所指内容、避免前后矛盾，不得把候选人的话当成面试官的新问题，也不要擅自虚构补充。
 
-岗位信息：
-公司：{self.session.company}
-岗位：{self.session.position}
-
-岗位 JD：
-{jd[:12000]}
-
-候选人事实（含简历和项目描述）：
-{facts[:18000]}
-
-外部题库与项目参考（只用于预测问题和补充通用技术知识，不得当作候选人亲历）：
-{external}
-
-当前面试上下文：
-{topic_context}
+统一回答上下文（由模型无关的上下文模块提供）：
+{context.text}
 """.strip()
-
-    def _topic_context(self) -> str:
-        with self._lock:
-            questions = list(self._topic_questions)
-            answers = list(self._candidate_answers)
-        if not questions and not answers:
-            return "尚无已确认的技术主题。"
-        lines = ["面试官当前追问链："]
-        lines.extend(f"- {item}" for item in questions)
-        if answers:
-            lines.append("候选人最近回答：")
-            lines.extend(f"- {item}" for item in answers)
-        return "\n".join(lines)
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
@@ -190,7 +181,7 @@ class QwenOnlyEngine:
             )
         self.bus.publish({"type": "transcript", "entry": entry.to_dict()})
         self.bus.publish({"type": "fast_question_transcript", "text": clean})
-        self.text_answerer.answer(clean, self.instructions())
+        self.text_answerer.answer(clean, self.instructions(clean))
 
     def on_qwen_event(self, event: dict) -> None:
         event_type = event.get("type")

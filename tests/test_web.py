@@ -183,3 +183,33 @@ def test_external_github_source_is_added_to_current_session(tmp_path, monkeypatc
         {"label": "Agent 题库", "url": "https://github.com/example/questions"}
     ]
     assert "Agent Loop" in app.state.engine.instructions()
+
+
+def test_workbench_checkbox_persists_local_knowledge_for_all_answer_models(tmp_path):
+    pack = tmp_path / "workspace" / "knowledge" / "packs" / "agent"
+    pack.mkdir(parents=True)
+    (pack / "workflow.md").write_text(
+        "# Agent 工作流\n先规划，再执行工具。", encoding="utf-8"
+    )
+    app = create_app(tmp_path)
+    app.state.engine.context_provider.knowledge.rebuild()
+
+    with TestClient(app) as client:
+        prepared = client.post(
+            "/api/session/prepare",
+            data={
+                "company": "测试",
+                "position": "Agent",
+                "jd_text": "Agent 工作流",
+                "knowledge_packs": '["agent"]',
+            },
+        )
+        session_id = prepared.json()["session"]["id"]
+        unchecked = client.post(
+            f"/api/session/{session_id}/knowledge-packs", json={"packs": []}
+        )
+
+    assert prepared.status_code == 200
+    assert prepared.json()["session"]["knowledge_packs"] == ["agent"]
+    assert unchecked.status_code == 200
+    assert app.state.engine.session.knowledge_packs == []
