@@ -81,3 +81,4 @@ def test_dual_mode_sends_system_audio_to_dedicated_asr(monkeypatch):
 
     assert texts == [("interviewer", "请介绍 RAG 项目", True)]
     assert len(sent) == 1
+    assert np.allclose(sent[0][0], 0.01)

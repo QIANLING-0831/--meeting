@@ -102,7 +102,8 @@ class StreamingAudioCoordinator:
         def send_block(block: np.ndarray, sample_rate: int) -> None:
             now = time.monotonic()
             prepared = processor.process(block) if processor else block
-            rms = float(np.sqrt(np.mean(np.square(prepared)))) if prepared.size else 0.0
+            monitored = block if self.asr_stream else prepared
+            rms = float(np.sqrt(np.mean(np.square(monitored)))) if monitored.size else 0.0
             silence_floor = processor.silence_rms if processor else 0.0008
             if rms < silence_floor:
                 self._silent_since.setdefault(speaker, now)
@@ -130,7 +131,10 @@ class StreamingAudioCoordinator:
             if speaker == "interviewer" and self.fast_stream:
                 self.fast_stream.send(prepared, sample_rate)
             if speaker == "interviewer" and self.asr_stream:
-                self.asr_stream.send(prepared, sample_rate)
+                # Dedicated ASR is trained for unmodified PCM. Per-40ms centering
+                # and gain changes introduce discontinuities and can collapse
+                # quiet/flat loopback blocks to zero.
+                self.asr_stream.send(block, sample_rate)
 
         def report_capture_status(status: str, message: str) -> None:
             if self.on_audio_status:

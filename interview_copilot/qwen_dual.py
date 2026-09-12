@@ -74,6 +74,7 @@ class QwenAsrStream:
         self._context = context[:400]
         self._lock = threading.Lock()
         self._started = False
+        self._audio_buffer = np.empty(0, dtype=np.float32)
         owner = self
 
         class Callback(callback_base):
@@ -129,17 +130,29 @@ class QwenAsrStream:
 
     def send(self, audio: np.ndarray, source_rate: int) -> None:
         samples = _resample(audio, source_rate, 16_000)
-        pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
         with self._lock:
             if not self._started:
                 return
-            self._recognition.send_audio_frame(pcm)
+            self._audio_buffer = np.concatenate((self._audio_buffer, samples))
+            # DashScope recommends sending about 100 ms per packet. Capturing in
+            # shorter blocks keeps the UI meter responsive, so aggregate here.
+            while self._audio_buffer.size >= 1_600:
+                packet = self._audio_buffer[:1_600]
+                self._audio_buffer = self._audio_buffer[1_600:]
+                self._send_packet(packet)
+
+    def _send_packet(self, samples: np.ndarray) -> None:
+        pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+        self._recognition.send_audio_frame(pcm)
 
     def stop(self) -> None:
         with self._lock:
             if self._started:
                 self._started = False
                 try:
+                    if self._audio_buffer.size:
+                        self._send_packet(self._audio_buffer)
+                        self._audio_buffer = np.empty(0, dtype=np.float32)
                     self._recognition.stop()
                 except Exception:
                     pass

@@ -95,3 +95,43 @@ def test_text_answerer_streams_incremental_qwen_answer():
         "再举例。",
     ]
     assert events[-1]["type"] == "fast_answer_completed"
+
+
+def test_asr_stream_buffers_short_capture_blocks_into_100ms_packets():
+    class CallbackBase:
+        pass
+
+    class ResultClass:
+        @staticmethod
+        def is_sentence_end(_sentence):
+            return False
+
+    class Recognition:
+        def __init__(self, **_options):
+            self.frames = []
+
+        def start(self, **_options):
+            return None
+
+        def send_audio_frame(self, frame):
+            self.frames.append(frame)
+
+        def stop(self):
+            return None
+
+    stream = QwenAsrStream(
+        lambda *_args: None,
+        lambda _event: None,
+        api_key="test-key",
+        recognition_class=Recognition,
+        callback_base=CallbackBase,
+        result_class=ResultClass,
+    )
+    stream.start()
+    for _ in range(3):
+        stream.send(np.full(1_920, 0.01, dtype=np.float32), 48_000)
+
+    assert [len(frame) for frame in stream._recognition.frames] == [3_200]
+
+    stream.stop()
+    assert [len(frame) for frame in stream._recognition.frames] == [3_200, 640]
