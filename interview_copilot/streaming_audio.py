@@ -11,6 +11,7 @@ from .audio import LoopbackAudioProcessor, capture_loopback
 from .config import AppConfig
 from .models import Speaker
 from .qwen_realtime import AliyunRealtimeAnswerStream
+from .qwen_dual import QwenAsrStream
 
 
 @dataclass
@@ -36,6 +37,7 @@ class StreamingAudioCoordinator:
         self.stop_event = Event()
         self.channels: list[_Channel] = []
         self.fast_stream: AliyunRealtimeAnswerStream | None = None
+        self.asr_stream: QwenAsrStream | None = None
         self._last_level_at: dict[Speaker, float] = {}
         self._silent_since: dict[Speaker, float] = {}
         self._silence_reported: set[Speaker] = set()
@@ -46,6 +48,8 @@ class StreamingAudioCoordinator:
         microphone_device_id: str = "",
         loopback_device_name: str = "",
         fast_instructions: str = "",
+        asr_context: str = "",
+        asr_vocabulary: dict[str, int] | None = None,
     ) -> None:
         if self.channels:
             return
@@ -55,14 +59,27 @@ class StreamingAudioCoordinator:
         selected_loopback = loopback_device_name or self.config.device_name
         if not self.on_fast_event:
             raise RuntimeError("Qwen 事件处理器未配置")
-        self.fast_stream = AliyunRealtimeAnswerStream(
-            self.on_fast_event,
-            model=self.config.qwen_realtime_model,
-            workspace_id=self.config.qwen_realtime_workspace_id,
-            turn_detection=self.config.qwen_realtime_turn_detection,
-            instructions=fast_instructions,
-        )
-        self.fast_stream.start()
+        if self.config.qwen_pipeline_mode == "dual":
+            if not self.on_text:
+                raise RuntimeError("Qwen ASR 文本处理器未配置")
+            self.asr_stream = QwenAsrStream(
+                lambda text, final: self.on_text("interviewer", text, final),
+                self.on_fast_event,
+                model=self.config.qwen_asr_model,
+                workspace_id=self.config.qwen_realtime_workspace_id,
+                context=asr_context,
+                vocabulary=asr_vocabulary,
+            )
+            self.asr_stream.start()
+        else:
+            self.fast_stream = AliyunRealtimeAnswerStream(
+                self.on_fast_event,
+                model=self.config.qwen_realtime_model,
+                workspace_id=self.config.qwen_realtime_workspace_id,
+                turn_detection=self.config.qwen_realtime_turn_detection,
+                instructions=fast_instructions,
+            )
+            self.fast_stream.start()
         self._start_channel("interviewer", capture_loopback, selected_loopback)
 
     def stop(self) -> None:
@@ -70,6 +87,9 @@ class StreamingAudioCoordinator:
         if self.fast_stream:
             self.fast_stream.stop()
             self.fast_stream = None
+        if self.asr_stream:
+            self.asr_stream.stop()
+            self.asr_stream = None
         for channel in self.channels:
             channel.thread.join(timeout=3)
         self.channels.clear()
@@ -109,6 +129,8 @@ class StreamingAudioCoordinator:
                 self._last_level_at[speaker] = now
             if speaker == "interviewer" and self.fast_stream:
                 self.fast_stream.send(prepared, sample_rate)
+            if speaker == "interviewer" and self.asr_stream:
+                self.asr_stream.send(prepared, sample_rate)
 
         def report_capture_status(status: str, message: str) -> None:
             if self.on_audio_status:

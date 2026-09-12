@@ -5,13 +5,20 @@ from pathlib import Path
 
 from .event_bus import EventBus
 from .models import TranscriptEntry
+from .qwen_dual import QwenTextAnswerer, extract_hotwords
 from .session import InterviewSession, SessionManager
 
 
 class QwenOnlyEngine:
     """Small session/state layer for the single Qwen Realtime pipeline."""
 
-    def __init__(self, root: Path, bus: EventBus) -> None:
+    def __init__(
+        self,
+        root: Path,
+        bus: EventBus,
+        answer_model: str = "qwen-plus",
+        workspace_id: str = "",
+    ) -> None:
         self.sessions = SessionManager(root / "workspace" / "sessions")
         self.bus = bus
         self.session: InterviewSession | None = None
@@ -22,6 +29,9 @@ class QwenOnlyEngine:
         self._response_id = ""
         self._answer_running = False
         self._last_transcript_item = ""
+        self.text_answerer = QwenTextAnswerer(
+            self.on_qwen_event, answer_model, workspace_id=workspace_id
+        )
 
     def set_session(self, session: InterviewSession) -> None:
         self.session = session
@@ -40,7 +50,7 @@ class QwenOnlyEngine:
             return ""
         jd = (self.session.path / "jd.md").read_text(encoding="utf-8").strip()
         facts = (self.session.path / "candidate-facts.md").read_text(encoding="utf-8").strip()
-        return f"""你是候选人的实时面试回答助手。请直接听面试官的问题，并用中文输出候选人可以马上口述的回答。
+        return f"""你是候选人的实时面试回答助手。请根据面试官的问题，用中文输出候选人可以马上口述的回答。
 
 规则：
 1. 只回答面试官刚刚提出的完整问题，不要复述题目，不要寒暄。
@@ -59,6 +69,45 @@ class QwenOnlyEngine:
 候选人事实（含简历和项目描述）：
 {facts[:18000]}
 """.strip()
+
+    def asr_context(self) -> str:
+        if not self.session:
+            return ""
+        jd = (self.session.path / "jd.md").read_text(encoding="utf-8")
+        facts = (self.session.path / "candidate-facts.md").read_text(encoding="utf-8")
+        return (f"岗位：{self.session.position}。技术领域和专业词汇：{jd}\n{facts}")[:400]
+
+    def asr_vocabulary(self) -> dict[str, int]:
+        if not self.session:
+            return {}
+        source = "\n".join(
+            [
+                self.session.position,
+                (self.session.path / "jd.md").read_text(encoding="utf-8"),
+                (self.session.path / "candidate-facts.md").read_text(encoding="utf-8"),
+            ]
+        )
+        return extract_hotwords(source)
+
+    def on_asr_text(self, _speaker: str, text: str, final: bool) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        if not final:
+            self.bus.publish({"type": "qwen_transcript_delta", "text": clean})
+            return
+        entry = TranscriptEntry(speaker="interviewer", text=clean, final=True)
+        with self._lock:
+            self._question = clean
+        if self.session:
+            self.sessions.append_text(
+                self.session.id,
+                "interviewer-transcript.md",
+                f"- [{entry.created_at}] {clean}",
+            )
+        self.bus.publish({"type": "transcript", "entry": entry.to_dict()})
+        self.bus.publish({"type": "fast_question_transcript", "text": clean})
+        self.text_answerer.answer(clean, self.instructions())
 
     def on_qwen_event(self, event: dict) -> None:
         event_type = event.get("type")

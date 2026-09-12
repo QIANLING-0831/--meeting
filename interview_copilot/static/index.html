@@ -9,7 +9,7 @@
 </head>
 <body>
   <header>
-    <div><span class="eyebrow">QWEN-ONLY REALTIME</span><h1>Interview Copilot</h1></div>
+    <div><span class="eyebrow">QWEN DUAL-MODE REALTIME</span><h1>Interview Copilot</h1></div>
     <div class="status-row"><span id="aliyunStatus" class="pill">阿里云检查中</span><button id="aliyunKeyButton" class="ghost">配置 API Key</button></div>
   </header>
   <main>
@@ -38,13 +38,15 @@
     <section class="answer card">
       <div class="section-title"><div><span class="step">03</span><h2>Qwen 回答</h2></div><span id="answerState" class="muted">等待音频</span></div>
       <div class="realtime-controls">
-        <label>模型<select id="realtimeModel"><option value="qwen-audio-3.0-realtime-plus">Qwen Audio Realtime Plus</option><option value="qwen-audio-3.0-realtime-flash">Qwen Audio Realtime Flash</option></select></label>
-        <label>轮次检测<select id="turnDetection"><option value="smart_turn">Smart Turn</option><option value="server_vad">Server VAD</option></select></label>
+        <label>处理模式<select id="pipelineMode"><option value="dual">双模型（推荐：专用 ASR → 回答）</option><option value="realtime">单模型（Audio Realtime）</option></select></label>
+        <label>回答模型<select id="answerModel"><option value="qwen-plus">Qwen Plus（推荐）</option><option value="qwen-flash">Qwen Flash（更快）</option></select></label>
+        <label>单模型备用<select id="realtimeModel"><option value="qwen-audio-3.0-realtime-plus">Qwen Audio Realtime Plus</option><option value="qwen-audio-3.0-realtime-flash">Qwen Audio Realtime Flash</option></select></label>
+        <label>单模型轮次检测<select id="turnDetection"><option value="server_vad">Server VAD</option><option value="smart_turn">Smart Turn</option></select></label>
         <label>百炼业务空间 ID（推荐）<input id="workspaceId" placeholder="留空使用兼容域名"></label>
         <button id="saveRealtimeButton" class="secondary compact">保存设置</button>
       </div>
       <div id="questionBox" class="question-box">识别到完整问题后会显示在这里。</div>
-      <article id="answerOutput" class="answer-output"><div class="empty">系统音频直接进入 Qwen，由一个实时通道完成转写和回答。</div></article>
+      <article id="answerOutput" class="answer-output"><div class="empty">系统音频先由专用 Qwen ASR 转写，再由 Qwen Plus 流式回答。</div></article>
     </section>
   </main>
 

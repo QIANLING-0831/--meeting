@@ -32,9 +32,11 @@ class StartPayload(BaseModel):
 
 
 class RealtimeSettingsPayload(BaseModel):
+    pipeline_mode: str = "dual"
     model: str = "qwen-audio-3.0-realtime-plus"
+    answer_model: str = "qwen-plus"
     workspace_id: str = ""
-    turn_detection: str = "smart_turn"
+    turn_detection: str = "server_vad"
 
 
 class AliyunKeyPayload(BaseModel):
@@ -95,12 +97,18 @@ def create_app(root: Path | None = None) -> FastAPI:
     if config.aliyun_api_key.strip():
         os.environ["DASHSCOPE_API_KEY"] = config.aliyun_api_key.strip()
     bus = EventBus()
-    engine = QwenOnlyEngine(app_root, bus)
+    engine = QwenOnlyEngine(
+        app_root,
+        bus,
+        config.qwen_answer_model,
+        workspace_id=config.qwen_realtime_workspace_id,
+    )
     latest_session = engine.sessions.latest()
     if latest_session:
         engine.set_session(latest_session)
     audio = StreamingAudioCoordinator(
         config,
+        on_text=engine.on_asr_text,
         on_audio_level=lambda speaker, level: bus.publish(
             {"type": "audio_level", "speaker": speaker, "level": level}
         ),
@@ -150,7 +158,10 @@ def create_app(root: Path | None = None) -> FastAPI:
             "session": session_data,
             "answerSnapshot": engine.answer_snapshot(),
             "realtimeSettings": {
+                "pipelineMode": config.qwen_pipeline_mode,
                 "model": config.qwen_realtime_model,
+                "asrModel": config.qwen_asr_model,
+                "answerModel": config.qwen_answer_model,
                 "workspaceId": config.qwen_realtime_workspace_id,
                 "turnDetection": config.qwen_realtime_turn_detection,
             },
@@ -210,7 +221,12 @@ def create_app(root: Path | None = None) -> FastAPI:
                     }
                 )
         try:
-            audio.start(loopback_device_name=selected, fast_instructions=engine.instructions())
+            audio.start(
+                loopback_device_name=selected,
+                fast_instructions=engine.instructions(),
+                asr_context=engine.asr_context(),
+                asr_vocabulary=engine.asr_vocabulary(),
+            )
         except Exception as exc:
             audio.stop()
             raise HTTPException(500, f"Qwen 实时通道启动失败：{exc}") from exc
@@ -238,19 +254,33 @@ def create_app(root: Path | None = None) -> FastAPI:
     def select_realtime_settings(payload: RealtimeSettingsPayload):
         if engine.active:
             raise HTTPException(409, "请先停止实时会话，再修改 Qwen 设置")
+        if payload.pipeline_mode not in {"dual", "realtime"}:
+            raise HTTPException(400, "不支持的 Qwen 处理模式")
         if payload.model not in {"qwen-audio-3.0-realtime-flash", "qwen-audio-3.0-realtime-plus"}:
             raise HTTPException(400, "不支持的 Qwen 实时模型")
         if payload.turn_detection not in {"smart_turn", "server_vad"}:
             raise HTTPException(400, "不支持的轮次检测方式")
+        if payload.answer_model not in {"qwen-plus", "qwen-flash"}:
+            raise HTTPException(400, "不支持的 Qwen 文本回答模型")
         workspace_id = payload.workspace_id.strip()
         if workspace_id and not all(char.isalnum() or char in "-_" for char in workspace_id):
             raise HTTPException(400, "业务空间 ID 格式不正确")
         config.qwen_realtime_enabled = True
+        config.qwen_pipeline_mode = payload.pipeline_mode
         config.qwen_realtime_model = payload.model
+        config.qwen_answer_model = payload.answer_model
+        engine.text_answerer.model = payload.answer_model
+        engine.text_answerer.workspace_id = workspace_id
         config.qwen_realtime_workspace_id = workspace_id
         config.qwen_realtime_turn_detection = payload.turn_detection
         config.save(app_root)
-        return {"model": config.qwen_realtime_model, "workspaceId": workspace_id, "turnDetection": config.qwen_realtime_turn_detection}
+        return {
+            "pipelineMode": config.qwen_pipeline_mode,
+            "model": config.qwen_realtime_model,
+            "answerModel": config.qwen_answer_model,
+            "workspaceId": workspace_id,
+            "turnDetection": config.qwen_realtime_turn_detection,
+        }
 
     @app.post("/api/settings/aliyun-key")
     def save_aliyun_key(payload: AliyunKeyPayload):

@@ -140,7 +140,10 @@ def test_qwen_only_coordinator_always_creates_qwen_connection(monkeypatch):
         def start(self):
             return None
 
-    coordinator = StreamingAudioCoordinator(AppConfig(qwen_realtime_enabled=False), on_fast_event=lambda _event: None)
+    coordinator = StreamingAudioCoordinator(
+        AppConfig(qwen_realtime_enabled=False, qwen_pipeline_mode="realtime"),
+        on_fast_event=lambda _event: None,
+    )
     started_channels = []
     monkeypatch.setattr(
         coordinator,
@@ -159,7 +162,9 @@ def test_qwen_only_coordinator_always_creates_qwen_connection(monkeypatch):
 
 
 def test_qwen_start_failure_aborts_audio_capture(monkeypatch):
-    coordinator = StreamingAudioCoordinator(AppConfig(), on_fast_event=lambda _event: None)
+    coordinator = StreamingAudioCoordinator(
+        AppConfig(qwen_pipeline_mode="realtime"), on_fast_event=lambda _event: None
+    )
     started_channels = []
     monkeypatch.setattr(
         coordinator,
