@@ -14,7 +14,7 @@ class AppConfig:
     aliyun_api_key: str = field(default="", repr=False)
     device_name: str = ""
     sample_rate: int = 48_000
-    block_seconds: float = 0.04
+    block_seconds: float = 0.1
     silence_seconds: float = 1.0
     min_speech_seconds: float = 0.8
     silence_rms: float = 0.006

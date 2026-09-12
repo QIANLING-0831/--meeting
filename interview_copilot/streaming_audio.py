@@ -146,7 +146,7 @@ class StreamingAudioCoordinator:
                     self.stop_event,
                     device_name,
                     self.config.sample_rate,
-                    min(self.config.block_seconds, 0.04),
+                    max(0.04, min(self.config.block_seconds, 0.1)),
                     send_block,
                     on_status=report_capture_status,
                 )
