@@ -36,6 +36,24 @@ class AppConfig:
     qwen_asr_model: str = "qwen-audio-3.0-asr-flash-streaming"
     qwen_answer_model: str = "qwen-plus"
     browser_disconnect_grace_seconds: float = 2.0
+    overlay_enabled: bool = False
+    overlay_opacity: float = 0.88
+    overlay_background_opacity: float = 0.78
+    overlay_text_opacity: float = 1.0
+    overlay_font_size: int = 24
+    overlay_history_font_size: int = 14
+    overlay_text_color: str = "#E8F5EE"
+    overlay_history_color: str = "#A9BBB2"
+    overlay_show_question: bool = True
+    overlay_show_history: bool = True
+    overlay_history_count: int = 2
+    overlay_highlight_progress: bool = True
+    overlay_auto_microphone: bool = True
+    overlay_size_preset: str = "standard"
+    overlay_width: int = 0
+    overlay_height: int = 0
+    overlay_x: int | None = None
+    overlay_y: int | None = None
 
     @classmethod
     def load(cls, root: Path) -> "AppConfig":

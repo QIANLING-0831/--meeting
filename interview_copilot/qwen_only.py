@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import threading
 from collections import deque
 from difflib import SequenceMatcher
@@ -28,9 +30,11 @@ class QwenOnlyEngine:
         self.active = False
         self._lock = threading.Lock()
         self._question = ""
+        self._pending_question = ""
         self._answer = ""
         self._response_id = ""
         self._answer_running = False
+        self._answer_error = ""
         self._answer_touched = False
         self._last_transcript_item = ""
         # Keep the active follow-up chain instead of mechanically retaining two
@@ -38,6 +42,9 @@ class QwenOnlyEngine:
         # only a safety bound for prompt size during a long interview.
         self._topic_questions: deque[str] = deque(maxlen=10)
         self._candidate_answers: deque[str] = deque(maxlen=8)
+        self._answer_history: deque[dict[str, str]] = deque(maxlen=20)
+        self._candidate_spoken = ""
+        self._candidate_state = "idle"
         self.context_provider = AnswerContextProvider(root / "workspace", self.sessions)
         self.text_answerer = QwenTextAnswerer(
             self.on_qwen_event, answer_model, workspace_id=workspace_id
@@ -45,17 +52,116 @@ class QwenOnlyEngine:
 
     def set_session(self, session: InterviewSession) -> None:
         self.session = session
+        state_path = session.path / "overlay-state.json"
+        with self._lock:
+            self._question = ""
+            self._pending_question = ""
+            self._answer = ""
+            self._answer_error = ""
+            self._response_id = ""
+            self._answer_running = False
+            self._answer_touched = False
+            self._last_transcript_item = ""
+            self._topic_questions.clear()
+            self._candidate_answers.clear()
+            self._answer_history.clear()
+            self._candidate_spoken = ""
+            self._candidate_state = "idle"
+            if state_path.exists():
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    self._question = str(state.get("question", ""))
+                    self._answer = str(state.get("answer", ""))
+                    self._answer_history.extend(state.get("history", [])[:20])
+                    self._candidate_spoken = str(state.get("candidateSpoken", ""))
+                    self._candidate_state = str(state.get("candidateState", "idle"))
+                except (OSError, ValueError, TypeError):
+                    pass
+
+    @staticmethod
+    def _covered_sentence_count(answer: str, spoken: str) -> int:
+        """Estimate reading progress only when the spoken text strongly matches."""
+        normalized_spoken = "".join(spoken.lower().split())
+        if len(normalized_spoken) < 8:
+            return 0
+        sentences = [part.strip() for part in re.split(r"(?<=[。！？!?；;])", answer) if part.strip()]
+        covered = 0
+        for sentence in sentences:
+            normalized = "".join(sentence.lower().split()).strip("，。！？!?；;：:")
+            if len(normalized) < 5:
+                continue
+            direct = normalized in normalized_spoken
+            match = SequenceMatcher(None, normalized, normalized_spoken).find_longest_match(
+                0, len(normalized), 0, len(normalized_spoken)
+            )
+            if direct or match.size >= max(7, int(len(normalized) * 0.58)):
+                covered += 1
+                continue
+            break
+        return covered
 
     def answer_snapshot(self) -> dict:
         with self._lock:
             return {
                 "question": self._question,
+                "pendingQuestion": self._pending_question,
                 "text": self._answer,
                 "responseId": self._response_id,
                 "running": self._answer_running,
+                "error": self._answer_error,
                 "recentQuestions": list(self._topic_questions),
                 "candidateAnswers": list(self._candidate_answers),
+                "history": list(self._answer_history),
+                "candidateSpoken": self._candidate_spoken,
+                "candidateState": self._candidate_state,
+                "coveredSentenceCount": self._covered_sentence_count(
+                    self._answer, self._candidate_spoken
+                ),
             }
+
+    def _save_display_state(self) -> None:
+        if not self.session:
+            return
+        state = {
+            "question": self._question,
+            "answer": self._answer,
+            "history": list(self._answer_history),
+            "candidateSpoken": self._candidate_spoken,
+            "candidateState": self._candidate_state,
+        }
+        try:
+            (self.session.path / "overlay-state.json").write_text(
+                json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    def _stage_question(self, text: str) -> None:
+        if text != self._question:
+            self._pending_question = text
+        if self._candidate_state == "answering":
+            self._candidate_state = "interrupted"
+        elif self._candidate_state == "likely_complete":
+            self._candidate_state = "answered"
+
+    def _promote_pending_answer(self) -> None:
+        if self._answer and self._question:
+            self._answer_history.appendleft(
+                {
+                    "question": self._question,
+                    "answer": self._answer,
+                    "candidateStatus": self._candidate_state,
+                }
+            )
+        if self._pending_question:
+            self._question = self._pending_question
+        self._pending_question = ""
+        self._answer = ""
+        self._candidate_spoken = ""
+        self._candidate_state = "waiting"
+
+    def _publish_answer_snapshot(self) -> None:
+        self.bus.publish({"type": "answer_snapshot", "snapshot": self.answer_snapshot()})
 
     def instructions(self, question: str = "") -> str:
         if not self.session:
@@ -138,24 +244,39 @@ class QwenOnlyEngine:
         if not clean:
             return
         if not final:
+            if speaker == "candidate":
+                with self._lock:
+                    self._candidate_state = "answering"
             self.bus.publish({"type": "qwen_transcript_delta", "speaker": speaker, "text": clean})
+            if speaker == "candidate":
+                self._publish_answer_snapshot()
             return
         if speaker == "candidate":
             # Laptop speakers can leak the interviewer's voice back into the
             # microphone. Do not mistake a near-duplicate question for the
             # candidate's answer context.
             with self._lock:
-                current_question = self._question
+                possible_echoes = (self._question, self._pending_question)
             comparable = lambda value: "".join(value.lower().split()).strip("，。！？?")
-            if current_question and SequenceMatcher(
-                None, comparable(clean), comparable(current_question)
-            ).ratio() >= 0.82:
+            if any(
+                question
+                and SequenceMatcher(None, comparable(clean), comparable(question)).ratio() >= 0.82
+                for question in possible_echoes
+            ):
                 self.bus.publish({"type": "candidate_echo_ignored", "text": clean})
                 return
             entry = TranscriptEntry(speaker="candidate", text=clean, final=True)
             with self._lock:
                 if not self._candidate_answers or self._candidate_answers[-1] != clean:
                     self._candidate_answers.append(clean)
+                self._candidate_spoken = f"{self._candidate_spoken} {clean}".strip()
+                trailing = ("然后", "因为", "但是", "比如", "首先", "其次", "还有", "主要是", "一方面")
+                looks_incomplete = clean.rstrip("，, ").endswith(trailing)
+                enough_content = len("".join(clean.split())) >= 12
+                self._candidate_state = (
+                    "answering" if looks_incomplete else "likely_complete" if enough_content else "answering"
+                )
+                self._save_display_state()
             if self.session:
                 self.sessions.append_text(
                     self.session.id,
@@ -169,10 +290,11 @@ class QwenOnlyEngine:
                     "answers": list(self._candidate_answers),
                 }
             )
+            self._publish_answer_snapshot()
             return
         entry = TranscriptEntry(speaker="interviewer", text=clean, final=True)
         with self._lock:
-            self._question = clean
+            self._stage_question(clean)
             self._remember_question(clean)
         if self.session:
             self.sessions.append_text(
@@ -182,6 +304,7 @@ class QwenOnlyEngine:
             )
         self.bus.publish({"type": "transcript", "entry": entry.to_dict()})
         self.bus.publish({"type": "fast_question_transcript", "text": clean})
+        self._publish_answer_snapshot()
         self.text_answerer.answer(clean, self.instructions(clean))
 
     def on_qwen_event(self, event: dict) -> None:
@@ -194,7 +317,7 @@ class QwenOnlyEngine:
                 self._last_transcript_item = transcript_key
                 entry = TranscriptEntry(speaker="interviewer", text=text, final=True)
                 with self._lock:
-                    self._question = text
+                    self._stage_question(text)
                     self._remember_question(text)
                 if self.session:
                     self.sessions.append_text(
@@ -208,22 +331,29 @@ class QwenOnlyEngine:
                 self._response_id = str(event.get("responseId", ""))
                 self._answer_touched = False
                 self._answer_running = True
+                self._answer_error = ""
         elif event_type == "fast_answer_delta":
+            delta = str(event.get("delta", ""))
             with self._lock:
                 if not self._response_id or event.get("responseId") == self._response_id:
-                    if not self._answer_touched:
-                        self._answer = ""
+                    if not self._answer_touched and delta.strip():
+                        self._promote_pending_answer()
                         self._answer_touched = True
-                    self._answer += str(event.get("delta", ""))
+                    if self._answer_touched:
+                        self._answer += delta
         elif event_type == "fast_answer_text_done":
             text = str(event.get("text", "")).strip()
             with self._lock:
                 if text and (not self._response_id or event.get("responseId") == self._response_id):
+                    if not self._answer_touched:
+                        self._promote_pending_answer()
                     self._answer = text
                     self._answer_touched = True
         elif event_type == "fast_answer_completed":
             with self._lock:
                 self._answer_running = False
+                if not self._answer_touched:
+                    self._pending_question = ""
                 question = self._question
                 answer = self._answer.strip()
                 answer_touched = self._answer_touched
@@ -233,7 +363,12 @@ class QwenOnlyEngine:
                     "answers.md",
                     f"\n## {question or '实时回答'}\n\n{answer}\n",
                 )
+            with self._lock:
+                self._save_display_state()
         elif event_type == "fast_answer_error":
             with self._lock:
                 self._answer_running = False
+                self._pending_question = ""
+                self._answer_error = str(event.get("message", "生成失败，已保留上次回答"))
         self.bus.publish(event)
+        self._publish_answer_snapshot()

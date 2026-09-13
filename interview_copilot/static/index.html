@@ -60,6 +60,33 @@
 
     <section class="answer card">
       <div class="section-title"><div><span class="step">03</span><h2>Qwen 回答</h2></div><span id="answerState" class="muted">等待音频</span></div>
+      <div class="overlay-panel">
+        <div class="overlay-panel-head">
+          <label class="microphone-toggle"><input id="overlayEnabled" type="checkbox">启用置顶悬浮回答台</label>
+          <span id="overlayStatus" class="muted">未启用</span>
+          <button id="showOverlayButton" class="secondary compact" disabled>显示</button>
+          <button id="freezeOverlayButton" class="secondary compact" disabled>冻结</button>
+          <button id="lockOverlayButton" class="secondary compact" disabled>锁定</button>
+        </div>
+        <details id="overlaySettingsDetails">
+          <summary>悬浮窗显示设置</summary>
+          <div class="overlay-settings-grid">
+            <label>尺寸<select id="overlaySizePreset"><option value="compact">紧凑</option><option value="standard">标准</option><option value="wide">宽屏</option><option value="custom">自定义（已拖动调整）</option></select></label>
+            <label>历史问答数量<select id="overlayHistoryCount"><option value="1">1 组</option><option value="2">2 组</option><option value="3">3 组</option></select></label>
+            <label>当前答案字号<input id="overlayFontSize" type="number" min="8" max="96" step="1"></label>
+            <label>历史回答字号<input id="overlayHistoryFontSize" type="number" min="6" max="64" step="1"></label>
+            <label>背景透明度<input id="overlayBackgroundOpacity" type="range" min="5" max="100" step="1"></label>
+            <label>文字透明度<input id="overlayTextOpacity" type="range" min="15" max="100" step="1"></label>
+            <label>当前文字颜色<input id="overlayTextColor" type="color"></label>
+            <label>历史文字颜色<input id="overlayHistoryColor" type="color"></label>
+            <label class="overlay-check"><input id="overlayShowQuestion" type="checkbox">显示当前题目</label>
+            <label class="overlay-check"><input id="overlayShowHistory" type="checkbox">显示完整历史问答</label>
+            <label class="overlay-check"><input id="overlayHighlightProgress" type="checkbox">根据我的回答提示阅读进度</label>
+            <label class="overlay-check"><input id="overlayAutoMicrophone" type="checkbox">启用悬浮窗时自动听取我的回答</label>
+          </div>
+          <div class="overlay-settings-actions"><span class="hint">拖动四边或四角可自由缩放（最小 360×180）。快捷键：Ctrl+Alt+H 显示/隐藏 · Ctrl+Alt+P 冻结 · Ctrl+Alt+L 锁定穿透</span><button id="saveOverlaySettingsButton" class="secondary compact">保存设置</button></div>
+        </details>
+      </div>
       <div class="realtime-controls">
         <label>处理模式<select id="pipelineMode"><option value="realtime">单模型（推荐：Audio Realtime）</option><option value="dual">双模型（实验：专用 ASR → 回答）</option></select></label>
         <label>回答模型<select id="answerModel"><option value="qwen-plus">Qwen Plus（推荐）</option><option value="qwen-flash">Qwen Flash（更快）</option></select></label>
@@ -71,6 +98,7 @@
       <div id="questionBox" class="question-box">识别到完整问题后会显示在这里。</div>
       <div class="question-memory"><span class="muted">当前技术主题追问链</span><div id="questionMemory"><span class="muted">尚无确认问题</span></div></div>
       <article id="answerOutput" class="answer-output"><div class="empty">系统音频先由专用 Qwen ASR 转写，再由 Qwen Plus 流式回答。</div></article>
+      <div class="history-preview"><span class="muted">悬浮窗历史问答预览</span><div id="answerHistory"><span class="muted">尚无历史问答</span></div></div>
     </section>
   </main>
 

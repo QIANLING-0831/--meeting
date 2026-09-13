@@ -85,6 +85,25 @@ dialog form { margin: 0; }
 .question-memory { margin: 9px 0; font-size: 11px; }
 #questionMemory { display: flex; gap: 6px; overflow-x: auto; margin-top: 5px; }
 .memory-item { flex: 0 0 auto; max-width: 48%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; color: #cad6d0; background: #121916; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overlay-panel { margin-bottom: 12px; padding: 10px; border: 1px solid #315542; border-radius: 9px; background: #101b16; }
+.overlay-panel-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.overlay-panel-head .microphone-toggle { margin: 0 auto 0 0; color: var(--text); font-weight: 600; }
+.overlay-panel details { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+.overlay-panel summary { color: var(--green); font-size: 12px; cursor: pointer; user-select: none; }
+.overlay-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(110px, 1fr)); gap: 8px; margin-top: 10px; }
+.overlay-settings-grid label { margin: 0; }
+.overlay-settings-grid input, .overlay-settings-grid select { margin-top: 4px; padding: 7px; }
+.overlay-settings-grid input[type="color"] { height: 34px; padding: 3px; }
+.overlay-settings-grid input[type="range"] { height: 34px; padding: 0; }
+.overlay-settings-grid .overlay-check { display: flex; align-items: center; gap: 7px; padding: 7px 0; }
+.overlay-settings-grid .overlay-check input { width: auto; margin: 0; }
+.overlay-settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 9px; }
+.overlay-settings-actions .hint { margin: 0; }
+.history-preview { margin-top: 12px; font-size: 11px; }
+#answerHistory { display: grid; gap: 7px; margin-top: 6px; }
+.history-item { padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: #101613; color: var(--muted); }
+.history-item strong { display: block; color: #c7d2cc; margin-bottom: 5px; }
+.history-item p { margin: 0; white-space: pre-wrap; line-height: 1.5; }
 
 @media (max-width: 1100px) {
   main.setup-collapsed { grid-template-columns: 72px 1fr; }
@@ -100,4 +119,6 @@ dialog form { margin: 0; }
   .setup.collapsed #setupToggle { writing-mode: initial; }
   main.setup-collapsed { display: block; }
   .audio-routing { grid-template-columns: 1fr; }
+  .overlay-settings-grid { grid-template-columns: 1fr 1fr; }
+  .overlay-panel-head, .overlay-settings-actions { flex-wrap: wrap; }
 }

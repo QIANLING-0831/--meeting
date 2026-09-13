@@ -17,6 +17,7 @@ def test_home_and_status_are_qwen_only(tmp_path, monkeypatch):
 
     assert 'id="loopbackDevice"' in page
     assert 'id="microphoneEnabled"' in page
+    assert 'id="overlayEnabled"' in page
     assert "Qwen Audio Realtime Plus" in page
     assert "Codex" not in page
     assert "Paraformer" not in page
@@ -24,6 +25,7 @@ def test_home_and_status_are_qwen_only(tmp_path, monkeypatch):
     assert "loopbackDevices" in status
     assert "microphoneDevices" in status
     assert status["answerSnapshot"]["text"] == ""
+    assert status["overlay"]["settings"]["historyCount"] == 2
     assert home.headers["cache-control"] == "no-store"
 
 
@@ -213,3 +215,135 @@ def test_workbench_checkbox_persists_local_knowledge_for_all_answer_models(tmp_p
     assert prepared.json()["session"]["knowledge_packs"] == ["agent"]
     assert unchecked.status_code == 200
     assert app.state.engine.session.knowledge_packs == []
+
+
+def test_overlay_settings_are_validated_and_persisted(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        saved = client.post(
+            "/api/settings/overlay",
+            json={
+                "opacity": 0.73,
+                "background_opacity": 0.73,
+                "text_opacity": 0.82,
+                "font_size": 28,
+                "history_font_size": 13,
+                "text_color": "#FFFFFF",
+                "history_color": "#AABBCC",
+                "show_question": True,
+                "show_history": True,
+                "history_count": 3,
+                "highlight_progress": True,
+                "auto_microphone": True,
+                "size_preset": "wide",
+            },
+        )
+        invalid = client.post(
+            "/api/settings/overlay",
+            json={"background_opacity": 0.01, "font_size": 28, "history_font_size": 13},
+        )
+        status = client.get("/api/status").json()
+
+    assert saved.status_code == 200
+    assert invalid.status_code == 400
+    assert status["overlay"]["settings"]["historyCount"] == 3
+    persisted = AppConfig.load(tmp_path)
+    assert persisted.overlay_background_opacity == 0.73
+    assert persisted.overlay_text_opacity == 0.82
+
+
+def test_overlay_geometry_accepts_small_custom_size(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        response = client.post(
+            "/api/overlay/geometry",
+            json={"x": 24, "y": 30, "width": 360, "height": 180},
+        )
+
+    persisted = AppConfig.load(tmp_path)
+    assert response.status_code == 200
+    assert persisted.overlay_width == 360
+    assert persisted.overlay_height == 180
+    assert persisted.overlay_size_preset == "custom"
+
+
+def test_overlay_accepts_readable_large_font_sizes(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        response = client.post(
+            "/api/settings/overlay",
+            json={
+                "font_size": 64,
+                "history_font_size": 32,
+                "size_preset": "standard",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["fontSize"] == 64
+    assert response.json()["historyFontSize"] == 32
+
+
+def test_overlay_accepts_compact_font_sizes(tmp_path):
+    with TestClient(create_app(tmp_path)) as client:
+        response = client.post(
+            "/api/settings/overlay",
+            json={"font_size": 12, "history_font_size": 6, "size_preset": "standard"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["fontSize"] == 12
+    assert response.json()["historyFontSize"] == 6
+
+
+def test_overlay_can_be_force_unlocked_from_workbench(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "interview_copilot.overlay.OverlayManager.running",
+        property(lambda _self: True),
+    )
+    app = create_app(tmp_path)
+
+    with TestClient(app) as client:
+        locked = client.post("/api/overlay/lock")
+        unlocked = client.post("/api/overlay/unlock")
+
+    assert locked.status_code == 200
+    assert locked.json()["locked"] is True
+    assert unlocked.status_code == 200
+    assert unlocked.json()["locked"] is False
+
+
+def test_enabled_overlay_automatically_enables_candidate_microphone(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-12345678")
+    AppConfig(overlay_enabled=True, overlay_auto_microphone=True).save(tmp_path)
+    monkeypatch.setattr("interview_copilot.web.OverlayManager.start", lambda _self: True)
+    monkeypatch.setattr("interview_copilot.web.OverlayManager.stop", lambda _self: None)
+    monkeypatch.setattr(
+        "interview_copilot.web.list_loopback_devices",
+        lambda: [SimpleNamespace(name="扬声器", id="device-1")],
+    )
+    monkeypatch.setattr(
+        "interview_copilot.web.probe_loopback_levels",
+        lambda **_options: [{"name": "扬声器", "id": "device-1", "rms": 0.02}],
+    )
+    monkeypatch.setattr(
+        "interview_copilot.web.list_input_devices",
+        lambda: [SimpleNamespace(name="麦克风", id="7")],
+    )
+    app = create_app(tmp_path)
+    app.state.engine.session, _ = app.state.engine.sessions.create(
+        company="测试", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    calls = []
+    monkeypatch.setattr(app.state.audio, "start", lambda **options: calls.append(options))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/interview/start",
+            json={
+                "loopback_device_name": "扬声器",
+                "microphone_enabled": False,
+                "microphone_device_id": "7",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["microphoneEnabled"] is True
+    assert calls[0]["microphone_enabled"] is True

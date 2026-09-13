@@ -117,3 +117,68 @@ def test_interviewer_echo_from_microphone_is_not_candidate_context(tmp_path):
     engine.on_asr_text("candidate", "请介绍一下 Agent 的工作流程", True)
 
     assert engine.answer_snapshot()["candidateAnswers"] == []
+
+
+def test_new_question_does_not_replace_visible_pair_until_first_answer_text(tmp_path):
+    engine = QwenOnlyEngine(tmp_path, EventBus())
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q1", "text": "什么是 Agent Loop？"})
+    engine.on_qwen_event({"type": "fast_answer_started", "responseId": "r1"})
+    engine.on_qwen_event({"type": "fast_answer_delta", "responseId": "r1", "delta": "Agent Loop 是规划、执行和观察的循环。"})
+    engine.on_qwen_event({"type": "fast_answer_completed", "responseId": "r1", "status": "completed"})
+
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q2", "text": "工具调用失败怎么处理？"})
+    waiting = engine.answer_snapshot()
+    assert waiting["question"] == "什么是 Agent Loop？"
+    assert waiting["pendingQuestion"] == "工具调用失败怎么处理？"
+    assert "规划、执行" in waiting["text"]
+
+    engine.on_qwen_event({"type": "fast_answer_started", "responseId": "r2"})
+    engine.on_qwen_event({"type": "fast_answer_delta", "responseId": "r2", "delta": "我会设置超时与重试。"})
+    promoted = engine.answer_snapshot()
+    assert promoted["question"] == "工具调用失败怎么处理？"
+    assert promoted["text"] == "我会设置超时与重试。"
+    assert promoted["history"][0]["question"] == "什么是 Agent Loop？"
+    assert "规划、执行" in promoted["history"][0]["answer"]
+
+
+def test_empty_new_response_keeps_previous_question_and_answer(tmp_path):
+    engine = QwenOnlyEngine(tmp_path, EventBus())
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q1", "text": "请介绍一下项目。"})
+    engine.on_qwen_event({"type": "fast_answer_started", "responseId": "r1"})
+    engine.on_qwen_event({"type": "fast_answer_text_done", "responseId": "r1", "text": "这是一个知识库项目。"})
+    engine.on_qwen_event({"type": "fast_answer_completed", "responseId": "r1", "status": "completed"})
+    before = engine.answer_snapshot()
+
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "noise", "text": "嗯。"})
+    engine.on_qwen_event({"type": "fast_answer_started", "responseId": "r2"})
+    engine.on_qwen_event({"type": "fast_answer_text_done", "responseId": "r2", "text": ""})
+    engine.on_qwen_event({"type": "fast_answer_completed", "responseId": "r2", "status": "completed"})
+
+    after = engine.answer_snapshot()
+    assert after["question"] == before["question"]
+    assert after["text"] == before["text"]
+    assert after["history"] == []
+
+
+def test_candidate_semantics_marks_interrupted_answer_and_reading_progress(tmp_path):
+    engine = QwenOnlyEngine(tmp_path, EventBus())
+    engine.session, _ = engine.sessions.create(
+        company="示例", position="Agent", jd_text="", resume_path=None, knowledge_packs=[]
+    )
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q1", "text": "怎么设计重试？"})
+    engine.on_qwen_event({"type": "fast_answer_started", "responseId": "r1"})
+    engine.on_qwen_event({"type": "fast_answer_text_done", "responseId": "r1", "text": "我会先设置超时和重试。然后增加熔断保护。"})
+    engine.on_asr_text("candidate", "我会先设置超时和重试。然后", True)
+
+    speaking = engine.answer_snapshot()
+    assert speaking["candidateState"] == "answering"
+    assert speaking["coveredSentenceCount"] == 1
+
+    engine.on_qwen_event({"type": "fast_question_transcript", "itemId": "q2", "text": "那熔断怎么恢复？"})
+    assert engine.answer_snapshot()["candidateState"] == "interrupted"

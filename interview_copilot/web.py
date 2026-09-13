@@ -12,12 +12,13 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .audio import default_input_device_id, list_input_devices, list_loopback_devices, probe_loopback_levels
 from .config import AppConfig
 from .event_bus import EventBus
 from .external_sources import import_github_source
+from .overlay import OverlayManager
 from .qwen_only import QwenOnlyEngine
 from .streaming_audio import StreamingAudioCoordinator
 
@@ -57,6 +58,36 @@ class AliyunKeyPayload(BaseModel):
     confirm_api_key: str
 
 
+class OverlaySettingsPayload(BaseModel):
+    opacity: float = 0.88
+    background_opacity: float = 0.78
+    text_opacity: float = 1.0
+    font_size: int = 24
+    history_font_size: int = 14
+    text_color: str = "#E8F5EE"
+    history_color: str = "#A9BBB2"
+    show_question: bool = True
+    show_history: bool = True
+    history_count: int = 2
+    highlight_progress: bool = True
+    auto_microphone: bool = True
+    size_preset: str = "standard"
+
+
+class OverlayGeometryPayload(BaseModel):
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class OverlayRuntimePayload(BaseModel):
+    hidden: bool
+    frozen: bool
+    locked: bool
+    hotkeys: dict[str, bool] = Field(default_factory=dict)
+
+
 def _mask_api_key(api_key: str) -> str:
     value = api_key.strip()
     return "****" if len(value) < 8 else f"{value[:3]}****{value[-4:]}"
@@ -65,8 +96,8 @@ def _mask_api_key(api_key: str) -> str:
 class _BrowserConnectionTracker:
     """Stop Qwen and audio after the final browser page disconnects."""
 
-    def __init__(self, engine, audio, bus: EventBus, grace_seconds: float) -> None:
-        self.engine, self.audio, self.bus = engine, audio, bus
+    def __init__(self, engine, audio, overlay, bus: EventBus, grace_seconds: float) -> None:
+        self.engine, self.audio, self.overlay, self.bus = engine, audio, overlay, bus
         self.grace_seconds = max(0.0, grace_seconds)
         self._connections = 0
         self._timer: threading.Timer | None = None
@@ -97,7 +128,7 @@ class _BrowserConnectionTracker:
     def _stop_if_abandoned(self) -> None:
         with self._lock:
             self._timer = None
-            if self._connections or not self.engine.active:
+            if self._connections or not self.engine.active or self.overlay.running:
                 return
             self.engine.active = False
         self.audio.stop()
@@ -131,18 +162,24 @@ def create_app(root: Path | None = None) -> FastAPI:
         on_fast_event=engine.on_qwen_event,
         instructions_provider=engine.instructions,
     )
+
+    overlay = OverlayManager(f"http://{config.web_host}:{config.web_port}")
     browser_connections = _BrowserConnectionTracker(
-        engine, audio, bus, config.browser_disconnect_grace_seconds
+        engine, audio, overlay, bus, config.browser_disconnect_grace_seconds
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if config.overlay_enabled and not overlay.start():
+            config.overlay_enabled = False
+            config.save(app_root)
         yield
         browser_connections.close()
         audio.stop()
+        overlay.stop()
 
     app = FastAPI(title="Qwen Realtime Interview Copilot", lifespan=lifespan)
-    app.state.engine, app.state.audio = engine, audio
+    app.state.engine, app.state.audio, app.state.overlay = engine, audio, overlay
     app.state.browser_connections = browser_connections
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
@@ -192,7 +229,150 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "packs": engine.context_provider.available_packs(),
                 "enabled": bool(engine.context_provider.available_packs()),
             },
+            "overlay": {
+                "enabled": config.overlay_enabled,
+                **overlay.state(),
+                "settings": overlay_settings(),
+            },
         }
+
+    def overlay_settings() -> dict:
+        return {
+            "opacity": config.overlay_opacity,
+            "backgroundOpacity": config.overlay_background_opacity,
+            "textOpacity": config.overlay_text_opacity,
+            "fontSize": config.overlay_font_size,
+            "historyFontSize": config.overlay_history_font_size,
+            "textColor": config.overlay_text_color,
+            "historyColor": config.overlay_history_color,
+            "showQuestion": config.overlay_show_question,
+            "showHistory": config.overlay_show_history,
+            "historyCount": config.overlay_history_count,
+            "highlightProgress": config.overlay_highlight_progress,
+            "autoMicrophone": config.overlay_auto_microphone,
+            "sizePreset": config.overlay_size_preset,
+        }
+
+    @app.get("/api/overlay/data")
+    def overlay_data():
+        return {
+            "snapshot": engine.answer_snapshot(),
+            "settings": overlay_settings(),
+            "geometry": {
+                "x": config.overlay_x,
+                "y": config.overlay_y,
+                "width": config.overlay_width,
+                "height": config.overlay_height,
+            },
+        }
+
+    @app.post("/api/overlay/geometry")
+    def save_overlay_geometry(payload: OverlayGeometryPayload):
+        config.overlay_x = payload.x
+        config.overlay_y = payload.y
+        config.overlay_width = max(360, min(1800, payload.width))
+        config.overlay_height = max(180, min(1200, payload.height))
+        config.overlay_size_preset = "custom"
+        config.save(app_root)
+        return {"ok": True}
+
+    @app.post("/api/overlay/runtime")
+    def update_overlay_runtime(payload: OverlayRuntimePayload):
+        overlay.update_runtime(payload.hidden, payload.frozen, payload.locked, payload.hotkeys)
+        return {"ok": True}
+
+    @app.post("/api/overlay/start")
+    def start_overlay():
+        config.overlay_enabled = True
+        config.save(app_root)
+        if not overlay.start():
+            config.overlay_enabled = False
+            config.save(app_root)
+            raise HTTPException(500, f"悬浮回答台启动失败：{overlay.last_error or '窗口未能启动'}")
+        return {"enabled": True, **overlay.state()}
+
+    @app.post("/api/overlay/stop")
+    def stop_overlay():
+        config.overlay_enabled = False
+        config.save(app_root)
+        overlay.stop()
+        return {"enabled": False, **overlay.state()}
+
+    @app.post("/api/overlay/show")
+    def show_overlay():
+        if not overlay.running:
+            raise HTTPException(409, "悬浮回答台尚未启用")
+        overlay.show()
+        return overlay.state()
+
+    @app.post("/api/overlay/freeze")
+    def freeze_overlay():
+        if not overlay.running:
+            raise HTTPException(409, "悬浮回答台尚未启用")
+        overlay.toggle_freeze()
+        return overlay.state()
+
+    @app.post("/api/overlay/lock")
+    def lock_overlay():
+        if not overlay.running:
+            raise HTTPException(409, "悬浮回答台尚未启用")
+        overlay.set_locked(True)
+        return overlay.state()
+
+    @app.post("/api/overlay/unlock")
+    def unlock_overlay():
+        if not overlay.running:
+            raise HTTPException(409, "悬浮回答台尚未启用")
+        overlay.set_locked(False)
+        return overlay.state()
+
+    @app.post("/api/settings/overlay")
+    def save_overlay_settings(payload: OverlaySettingsPayload):
+        if not 0.05 <= payload.background_opacity <= 1.0:
+            raise HTTPException(400, "背景透明度必须在 5% 到 100% 之间")
+        if not 0.15 <= payload.text_opacity <= 1.0:
+            raise HTTPException(400, "文字透明度必须在 15% 到 100% 之间")
+        if not 8 <= payload.font_size <= 96:
+            raise HTTPException(400, "当前答案字号必须在 8 到 96 之间")
+        if not 6 <= payload.history_font_size <= 64:
+            raise HTTPException(400, "历史回答字号必须在 6 到 64 之间")
+        if payload.history_count not in {1, 2, 3}:
+            raise HTTPException(400, "历史问答数量只能是 1、2 或 3")
+        if payload.size_preset not in {"compact", "standard", "wide", "custom"}:
+            raise HTTPException(400, "不支持的悬浮层尺寸")
+        for color in (payload.text_color, payload.history_color):
+            if len(color) != 7 or color[0] != "#" or any(
+                character not in "0123456789abcdefABCDEF" for character in color[1:]
+            ):
+                raise HTTPException(400, "文字颜色格式不正确")
+        preset_changed = payload.size_preset != config.overlay_size_preset and payload.size_preset != "custom"
+        config.overlay_opacity = payload.opacity
+        config.overlay_background_opacity = payload.background_opacity
+        config.overlay_text_opacity = payload.text_opacity
+        config.overlay_font_size = payload.font_size
+        config.overlay_history_font_size = payload.history_font_size
+        config.overlay_text_color = payload.text_color
+        config.overlay_history_color = payload.history_color
+        config.overlay_show_question = payload.show_question
+        config.overlay_show_history = payload.show_history
+        config.overlay_history_count = payload.history_count
+        config.overlay_highlight_progress = payload.highlight_progress
+        config.overlay_auto_microphone = payload.auto_microphone
+        config.overlay_size_preset = payload.size_preset
+        if preset_changed:
+            config.overlay_width = 0
+            config.overlay_height = 0
+            config.overlay_x = None
+            config.overlay_y = None
+        config.save(app_root)
+        if overlay.running and preset_changed:
+            overlay.stop()
+            overlay.start()
+        else:
+            overlay.settings_changed()
+        saved_settings = overlay_settings()
+        bus.publish({"type": "overlay_settings", "settings": saved_settings})
+        return saved_settings
 
     @app.post("/api/session/prepare")
     async def prepare_session(
@@ -292,10 +472,13 @@ def create_app(root: Path | None = None) -> FastAPI:
         try:
             microphone_ids = {item.id for item in list_input_devices()}
             microphone_id = payload.microphone_device_id.strip() or config.microphone_name or default_input_device_id()
-            if payload.microphone_enabled and microphone_id not in microphone_ids:
+            microphone_enabled = payload.microphone_enabled or (
+                config.overlay_enabled and config.overlay_auto_microphone
+            )
+            if microphone_enabled and microphone_id not in microphone_ids:
                 raise HTTPException(400, "选择的本地麦克风已不存在，请重新选择")
             audio.start(
-                microphone_enabled=payload.microphone_enabled,
+                microphone_enabled=microphone_enabled,
                 microphone_device_id=microphone_id,
                 loopback_device_name=selected,
                 fast_instructions=engine.instructions(),
@@ -306,13 +489,20 @@ def create_app(root: Path | None = None) -> FastAPI:
             audio.stop()
             raise HTTPException(500, f"Qwen 实时通道启动失败：{exc}") from exc
         engine.active = True
+        if config.overlay_enabled and not overlay.running:
+            overlay.start()
         if selected:
             config.device_name = selected
-        config.microphone_enabled = payload.microphone_enabled
+        config.microphone_enabled = microphone_enabled
         config.microphone_name = microphone_id
         config.save(app_root)
         bus.publish({"type": "interview_state", "running": True})
-        return {"ok": True, "loopbackDeviceName": selected, "microphoneDeviceId": microphone_id}
+        return {
+            "ok": True,
+            "loopbackDeviceName": selected,
+            "microphoneDeviceId": microphone_id,
+            "microphoneEnabled": microphone_enabled,
+        }
 
     @app.get("/api/audio/probe")
     def probe_audio():
